@@ -50,7 +50,11 @@ Environment.Settings = {
 	TriggerKey = "MouseButton2",
 	Toggle = false,
 	LockPart = "Head",
-	AimbotType = "Memory" -- NEW: Memory or Silent
+	AimbotType = "Memory",
+	SilentAimFOV = 3,
+	Chams = false,
+	ESPEnabled = false,
+	ESPColor = "FF0000"
 }
 
 Environment.FOVSettings = {
@@ -67,6 +71,10 @@ Environment.FOVSettings = {
 
 Environment.FOVCircle = Drawing.new("Circle")
 Environment.Locked = nil
+Environment.SilentTarget = nil
+Environment.OriginalSizes = {}
+Environment.ChamsHighlights = {}
+Environment.ESPBoxes = {}
 
 --// Core Functions
 
@@ -91,6 +99,22 @@ local function GetColor(Color)
 	return Color3.fromRGB(R, G, B)
 end
 
+local function HexToRGB(hex)
+	hex = hex:gsub("#", "")
+	if #hex == 6 then
+		local r = tonumber("0x" .. hex:sub(1, 2))
+		local g = tonumber("0x" .. hex:sub(3, 4))
+		local b = tonumber("0x" .. hex:sub(5, 6))
+		return Color3.fromRGB(r, g, b)
+	end
+	return Color3.fromRGB(255, 0, 0)
+end
+
+local function RainbowColor(offset)
+	local hue = (tick() * 0.5 + (offset or 0)) % 1
+	return Color3.fromHSV(hue, 1, 1)
+end
+
 local function SendNotification(TitleArg, DescriptionArg, DurationArg)
 	if Environment.Settings.SendNotifications then
 		StarterGui:SetCore("SendNotification", {
@@ -98,6 +122,230 @@ local function SendNotification(TitleArg, DescriptionArg, DurationArg)
 			Text = DescriptionArg,
 			Duration = DurationArg
 		})
+	end
+end
+
+--// Chams Functions (Independent Rainbow Highlight)
+
+local function CreateChams(player)
+	if not player or not player.Character then return end
+	
+	-- Remove existing chams first
+	if Environment.ChamsHighlights[player] then
+		RemoveChams(player)
+	end
+	
+	-- Wait for character to fully load
+	local character = player.Character
+	if not character:FindFirstChild("HumanoidRootPart") then
+		character:WaitForChild("HumanoidRootPart", 3)
+	end
+	
+	local highlight = Instance.new("Highlight")
+	highlight.Name = "ChamsHighlight"
+	highlight.Adornee = character
+	highlight.FillColor = Color3.fromRGB(255, 0, 0)
+	highlight.OutlineColor = Color3.fromRGB(255, 255, 255)
+	highlight.FillTransparency = 0.5
+	highlight.OutlineTransparency = 0
+	highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+	highlight.Parent = character
+	
+	Environment.ChamsHighlights[player] = highlight
+end
+
+local function RemoveChams(player)
+	if Environment.ChamsHighlights[player] then
+		Environment.ChamsHighlights[player]:Destroy()
+		Environment.ChamsHighlights[player] = nil
+	end
+end
+
+local function UpdateChams()
+	if not Environment.Settings.Chams then
+		for player, _ in pairs(Environment.ChamsHighlights) do
+			RemoveChams(player)
+		end
+		return
+	end
+	
+	for _, player in pairs(Players:GetPlayers()) do
+		if player ~= LocalPlayer and player.Character then
+			if Environment.Settings.TeamCheck and player.Team == LocalPlayer.Team then
+				RemoveChams(player)
+			else
+				CreateChams(player)
+			end
+		end
+	end
+end
+
+--// ESP Functions (Box around players with custom color)
+
+local function CreateESP(player)
+	if not player then return end
+	
+	-- Remove existing ESP first
+	if Environment.ESPBoxes[player] then
+		RemoveESP(player)
+	end
+	
+	-- Wait for character
+	if not player.Character then
+		player.CharacterAdded:Wait()
+	end
+	
+	local char = player.Character
+	if not char then return end
+	
+	local hrp = char:FindFirstChild("HumanoidRootPart")
+	if not hrp then
+		hrp = char:WaitForChild("HumanoidRootPart", 3)
+	end
+	if not hrp then return end
+	
+	-- Create ESP box using Drawing library
+	local box = {
+		TopLeft = Drawing.new("Line"),
+		TopRight = Drawing.new("Line"),
+		BottomLeft = Drawing.new("Line"),
+		BottomRight = Drawing.new("Line"),
+		LeftSide = Drawing.new("Line"),
+		RightSide = Drawing.new("Line"),
+		TopSide = Drawing.new("Line"),
+		BottomSide = Drawing.new("Line"),
+		Name = Drawing.new("Text")
+	}
+	
+	local espColor = HexToRGB(Environment.Settings.ESPColor)
+	
+	for _, line in pairs(box) do
+		if line.ClassName == "Line" then
+			line.Visible = false
+			line.Color = espColor
+			line.Thickness = 2
+			line.Transparency = 1
+		elseif line.ClassName == "Text" then
+			line.Visible = false
+			line.Color = espColor
+			line.Size = 16
+			line.Center = true
+			line.Outline = true
+			line.Font = 2
+			line.Transparency = 1
+		end
+	end
+	
+	Environment.ESPBoxes[player] = box
+end
+
+local function RemoveESP(player)
+	if Environment.ESPBoxes[player] then
+		for _, drawing in pairs(Environment.ESPBoxes[player]) do
+			drawing:Remove()
+		end
+		Environment.ESPBoxes[player] = nil
+	end
+end
+
+local function UpdateESPBoxes()
+	if not Environment.Settings.ESPEnabled then
+		for player, _ in pairs(Environment.ESPBoxes) do
+			RemoveESP(player)
+		end
+		return
+	end
+	
+	for player, box in pairs(Environment.ESPBoxes) do
+		if not player or not player.Character or not player.Character:FindFirstChild("HumanoidRootPart") then
+			for _, drawing in pairs(box) do
+				drawing.Visible = false
+			end
+			continue
+		end
+		
+		local char = player.Character
+		local hrp = char:FindFirstChild("HumanoidRootPart")
+		local head = char:FindFirstChild("Head")
+		
+		if not hrp or not head then continue end
+		
+		local hrpPos, onScreen = Camera:WorldToViewportPoint(hrp.Position)
+		
+		if not onScreen then
+			for _, drawing in pairs(box) do
+				drawing.Visible = false
+			end
+			continue
+		end
+		
+		-- Calculate box dimensions
+		local headPos = Camera:WorldToViewportPoint(head.Position + Vector3.new(0, 0.5, 0))
+		local legPos = Camera:WorldToViewportPoint(hrp.Position - Vector3.new(0, 3, 0))
+		
+		local height = math.abs(headPos.Y - legPos.Y)
+		local width = height / 2
+		
+		local x = hrpPos.X - width / 2
+		local y = headPos.Y
+		
+		local espColor = HexToRGB(Environment.Settings.ESPColor)
+		
+		-- Update box lines
+		box.TopLeft.From = Vector2.new(x, y)
+		box.TopLeft.To = Vector2.new(x, y + height / 4)
+		box.TopLeft.Visible = true
+		box.TopLeft.Color = espColor
+		
+		box.TopRight.From = Vector2.new(x + width, y)
+		box.TopRight.To = Vector2.new(x + width, y + height / 4)
+		box.TopRight.Visible = true
+		box.TopRight.Color = espColor
+		
+		box.BottomLeft.From = Vector2.new(x, y + height)
+		box.BottomLeft.To = Vector2.new(x, y + height - height / 4)
+		box.BottomLeft.Visible = true
+		box.BottomLeft.Color = espColor
+		
+		box.BottomRight.From = Vector2.new(x + width, y + height)
+		box.BottomRight.To = Vector2.new(x + width, y + height - height / 4)
+		box.BottomRight.Visible = true
+		box.BottomRight.Color = espColor
+		
+		box.LeftSide.From = Vector2.new(x, y)
+		box.LeftSide.To = Vector2.new(x + width / 4, y)
+		box.LeftSide.Visible = true
+		box.LeftSide.Color = espColor
+		
+		box.RightSide.From = Vector2.new(x + width, y)
+		box.RightSide.To = Vector2.new(x + width - width / 4, y)
+		box.RightSide.Visible = true
+		box.RightSide.Color = espColor
+		
+		box.TopSide.From = Vector2.new(x, y + height)
+		box.TopSide.To = Vector2.new(x + width / 4, y + height)
+		box.TopSide.Visible = true
+		box.TopSide.Color = espColor
+		
+		box.BottomSide.From = Vector2.new(x + width, y + height)
+		box.BottomSide.To = Vector2.new(x + width - width / 4, y + height)
+		box.BottomSide.Visible = true
+		box.BottomSide.Color = espColor
+		
+		-- Update name
+		box.Name.Position = Vector2.new(x + width / 2, y - 20)
+		box.Name.Text = player.Name
+		box.Name.Visible = true
+		box.Name.Color = espColor
+	end
+end
+
+--// Create ESP for all players
+local function InitializeESP()
+	for _, player in pairs(Players:GetPlayers()) do
+		if player ~= LocalPlayer then
+			CreateESP(player)
+		end
 	end
 end
 
@@ -118,12 +366,24 @@ local function CreateGUI()
 	local FOVFill = Instance.new("Frame")
 	local FOVValueLabel = Instance.new("TextLabel")
 	
-	-- NEW: Aimbot Type Dropdown
 	local AimbotTypeLabel = Instance.new("TextLabel")
 	local AimbotTypeBtn = Instance.new("TextButton")
 	local AimbotTypeDropdown = Instance.new("Frame")
 	local MemoryOption = Instance.new("TextButton")
 	local SilentOption = Instance.new("TextButton")
+	
+	local SilentFOVLabel = Instance.new("TextLabel")
+	local SilentFOVSlider = Instance.new("TextButton")
+	local SilentFOVFill = Instance.new("Frame")
+	local SilentFOVValueLabel = Instance.new("TextLabel")
+	
+	-- NEW: Chams Button
+	local ChamsBtn = Instance.new("TextButton")
+	
+	-- NEW: ESP Section
+	local ESPBtn = Instance.new("TextButton")
+	local ESPColorLabel = Instance.new("TextLabel")
+	local ESPColorInput = Instance.new("TextBox")
 	
 	ScreenGui.Name = "AimbotGUI"
 	ScreenGui.Parent = game.CoreGui
@@ -136,7 +396,7 @@ local function CreateGUI()
 	MainFrame.BorderColor3 = Color3.fromRGB(60, 60, 60)
 	MainFrame.BorderSizePixel = 1
 	MainFrame.Position = UDim2.new(0.05, 0, 0.3, 0)
-	MainFrame.Size = UDim2.new(0, 220, 0, 290) -- Increased height
+	MainFrame.Size = UDim2.new(0, 220, 0, 450)
 	MainFrame.Active = true
 	MainFrame.Draggable = true
 	
@@ -146,12 +406,11 @@ local function CreateGUI()
 	Title.Position = UDim2.new(0, 0, 0, 0)
 	Title.Size = UDim2.new(1, 0, 0, 25)
 	Title.Font = Enum.Font.Code
-	Title.Text = "aimbot"
+	Title.Text = "  aimbot"
 	Title.TextColor3 = Color3.fromRGB(255, 255, 255)
 	Title.TextSize = 14
 	Title.TextXAlignment = Enum.TextXAlignment.Left
 	Title.TextTransparency = 0.3
-	Title.Text = "  aimbot"
 	
 	Line.Name = "Line"
 	Line.Parent = MainFrame
@@ -171,7 +430,6 @@ local function CreateGUI()
 	EnabledBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
 	EnabledBtn.TextSize = 13
 	
-	-- NEW: Aimbot Type Label
 	AimbotTypeLabel.Name = "AimbotTypeLabel"
 	AimbotTypeLabel.Parent = MainFrame
 	AimbotTypeLabel.BackgroundTransparency = 1
@@ -183,7 +441,6 @@ local function CreateGUI()
 	AimbotTypeLabel.TextSize = 12
 	AimbotTypeLabel.TextXAlignment = Enum.TextXAlignment.Left
 	
-	-- NEW: Aimbot Type Button
 	AimbotTypeBtn.Name = "AimbotTypeBtn"
 	AimbotTypeBtn.Parent = MainFrame
 	AimbotTypeBtn.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
@@ -196,7 +453,6 @@ local function CreateGUI()
 	AimbotTypeBtn.TextSize = 13
 	AimbotTypeBtn.ZIndex = 2
 	
-	-- NEW: Dropdown Frame
 	AimbotTypeDropdown.Name = "AimbotTypeDropdown"
 	AimbotTypeDropdown.Parent = MainFrame
 	AimbotTypeDropdown.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
@@ -206,7 +462,6 @@ local function CreateGUI()
 	AimbotTypeDropdown.Visible = false
 	AimbotTypeDropdown.ZIndex = 3
 	
-	-- NEW: Memory Option
 	MemoryOption.Name = "MemoryOption"
 	MemoryOption.Parent = AimbotTypeDropdown
 	MemoryOption.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
@@ -220,7 +475,6 @@ local function CreateGUI()
 	MemoryOption.TextSize = 12
 	MemoryOption.ZIndex = 4
 	
-	-- NEW: Silent Option
 	SilentOption.Name = "SilentOption"
 	SilentOption.Parent = AimbotTypeDropdown
 	SilentOption.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
@@ -314,11 +568,97 @@ local function CreateGUI()
 	FOVValueLabel.TextColor3 = Color3.fromRGB(180, 180, 180)
 	FOVValueLabel.TextSize = 12
 	
-	-- FOV Slider functionality
+	SilentFOVLabel.Name = "SilentFOVLabel"
+	SilentFOVLabel.Parent = MainFrame
+	SilentFOVLabel.BackgroundTransparency = 1
+	SilentFOVLabel.Position = UDim2.new(0, 10, 0, 270)
+	SilentFOVLabel.Size = UDim2.new(1, -20, 0, 20)
+	SilentFOVLabel.Font = Enum.Font.Code
+	SilentFOVLabel.Text = "silent hitbox"
+	SilentFOVLabel.TextColor3 = Color3.fromRGB(180, 180, 180)
+	SilentFOVLabel.TextSize = 12
+	SilentFOVLabel.TextXAlignment = Enum.TextXAlignment.Left
+	
+	SilentFOVSlider.Name = "SilentFOVSlider"
+	SilentFOVSlider.Parent = MainFrame
+	SilentFOVSlider.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
+	SilentFOVSlider.BorderColor3 = Color3.fromRGB(60, 60, 60)
+	SilentFOVSlider.Position = UDim2.new(0, 10, 0, 295)
+	SilentFOVSlider.Size = UDim2.new(0, 150, 0, 20)
+	SilentFOVSlider.AutoButtonColor = false
+	SilentFOVSlider.Text = ""
+	
+	SilentFOVFill.Name = "SilentFOVFill"
+	SilentFOVFill.Parent = SilentFOVSlider
+	SilentFOVFill.BackgroundColor3 = Color3.fromRGB(70, 70, 70)
+	SilentFOVFill.BorderSizePixel = 0
+	SilentFOVFill.Size = UDim2.new(0.2, 0, 1, 0)
+	
+	SilentFOVValueLabel.Name = "SilentFOVValueLabel"
+	SilentFOVValueLabel.Parent = MainFrame
+	SilentFOVValueLabel.BackgroundTransparency = 1
+	SilentFOVValueLabel.Position = UDim2.new(0, 165, 0, 295)
+	SilentFOVValueLabel.Size = UDim2.new(0, 45, 0, 20)
+	SilentFOVValueLabel.Font = Enum.Font.Code
+	SilentFOVValueLabel.Text = "3"
+	SilentFOVValueLabel.TextColor3 = Color3.fromRGB(180, 180, 180)
+	SilentFOVValueLabel.TextSize = 12
+	
+	-- NEW: Chams Button
+	ChamsBtn.Name = "ChamsBtn"
+	ChamsBtn.Parent = MainFrame
+	ChamsBtn.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
+	ChamsBtn.BorderColor3 = Color3.fromRGB(60, 60, 60)
+	ChamsBtn.Position = UDim2.new(0, 10, 0, 325)
+	ChamsBtn.Size = UDim2.new(0, 90, 0, 22)
+	ChamsBtn.Font = Enum.Font.Code
+	ChamsBtn.Text = "chams"
+	ChamsBtn.TextColor3 = Color3.fromRGB(255, 120, 120)
+	ChamsBtn.TextSize = 13
+	
+	-- NEW: ESP Button
+	ESPBtn.Name = "ESPBtn"
+	ESPBtn.Parent = MainFrame
+	ESPBtn.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
+	ESPBtn.BorderColor3 = Color3.fromRGB(60, 60, 60)
+	ESPBtn.Position = UDim2.new(0, 10, 0, 357)
+	ESPBtn.Size = UDim2.new(0, 90, 0, 22)
+	ESPBtn.Font = Enum.Font.Code
+	ESPBtn.Text = "esp"
+	ESPBtn.TextColor3 = Color3.fromRGB(255, 120, 120)
+	ESPBtn.TextSize = 13
+	
+	-- NEW: ESP Color Label
+	ESPColorLabel.Name = "ESPColorLabel"
+	ESPColorLabel.Parent = MainFrame
+	ESPColorLabel.BackgroundTransparency = 1
+	ESPColorLabel.Position = UDim2.new(0, 10, 0, 387)
+	ESPColorLabel.Size = UDim2.new(1, -20, 0, 20)
+	ESPColorLabel.Font = Enum.Font.Code
+	ESPColorLabel.Text = "esp color (hex)"
+	ESPColorLabel.TextColor3 = Color3.fromRGB(180, 180, 180)
+	ESPColorLabel.TextSize = 12
+	ESPColorLabel.TextXAlignment = Enum.TextXAlignment.Left
+	
+	-- NEW: ESP Color Input
+	ESPColorInput.Name = "ESPColorInput"
+	ESPColorInput.Parent = MainFrame
+	ESPColorInput.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
+	ESPColorInput.BorderColor3 = Color3.fromRGB(60, 60, 60)
+	ESPColorInput.Position = UDim2.new(0, 10, 0, 412)
+	ESPColorInput.Size = UDim2.new(0, 90, 0, 22)
+	ESPColorInput.Font = Enum.Font.Code
+	ESPColorInput.Text = "FF0000"
+	ESPColorInput.TextColor3 = Color3.fromRGB(255, 255, 255)
+	ESPColorInput.TextSize = 13
+	ESPColorInput.PlaceholderText = "FF0000"
+	ESPColorInput.ClearTextOnFocus = false
+	
+	-- Slider functionality
 	local dragging = false
 	local function updateFOV(input)
 		local pos = math.clamp((input.Position.X - FOVSlider.AbsolutePosition.X) / FOVSlider.AbsoluteSize.X, 0, 1)
-		local fovValue = math.floor(15 + (pos * 70)) -- 15 to 85
+		local fovValue = math.floor(15 + (pos * 285))
 		Environment.FOVSettings.Amount = fovValue
 		FOVFill.Size = UDim2.new(pos, 0, 1, 0)
 		FOVValueLabel.Text = tostring(fovValue)
@@ -343,10 +683,42 @@ local function CreateGUI()
 		end
 	end)
 	
-	-- Set initial FOV slider position
-	local initialPos = (Environment.FOVSettings.Amount - 15) / 70
+	local silentDragging = false
+	local function updateSilentFOV(input)
+		local pos = math.clamp((input.Position.X - SilentFOVSlider.AbsolutePosition.X) / SilentFOVSlider.AbsoluteSize.X, 0, 1)
+		local silentValue = math.floor(1 + (pos * 9))
+		Environment.Settings.SilentAimFOV = silentValue
+		SilentFOVFill.Size = UDim2.new(pos, 0, 1, 0)
+		SilentFOVValueLabel.Text = tostring(silentValue)
+	end
+	
+	SilentFOVSlider.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 then
+			silentDragging = true
+			updateSilentFOV(input)
+		end
+	end)
+	
+	SilentFOVSlider.InputEnded:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 then
+			silentDragging = false
+		end
+	end)
+	
+	UserInputService.InputChanged:Connect(function(input)
+		if silentDragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+			updateSilentFOV(input)
+		end
+	end)
+	
+	-- Set initial slider positions
+	local initialPos = (Environment.FOVSettings.Amount - 15) / 285
 	FOVFill.Size = UDim2.new(initialPos, 0, 1, 0)
 	FOVValueLabel.Text = tostring(Environment.FOVSettings.Amount)
+	
+	local initialSilentPos = (Environment.Settings.SilentAimFOV - 1) / 9
+	SilentFOVFill.Size = UDim2.new(initialSilentPos, 0, 1, 0)
+	SilentFOVValueLabel.Text = tostring(Environment.Settings.SilentAimFOV)
 	
 	-- Toggle Enabled
 	EnabledBtn.MouseButton1Click:Connect(function()
@@ -359,34 +731,72 @@ local function CreateGUI()
 			EnabledBtn.TextColor3 = Color3.fromRGB(255, 120, 120)
 			Running = false
 			Environment.Locked = nil
+			Environment.SilentTarget = nil
 			if Animation then Animation:Cancel() end
 			Environment.FOVCircle.Color = GetColor(Environment.FOVSettings.Color)
 		end
 		SaveSettings()
 	end)
 	
-	-- NEW: Aimbot Type Dropdown Toggle
+	-- Aimbot Type Dropdown
 	AimbotTypeBtn.MouseButton1Click:Connect(function()
 		AimbotTypeDropdown.Visible = not AimbotTypeDropdown.Visible
 	end)
 	
-	-- NEW: Memory Option Click
 	MemoryOption.MouseButton1Click:Connect(function()
 		Environment.Settings.AimbotType = "Memory"
 		AimbotTypeBtn.Text = "Memory"
 		AimbotTypeDropdown.Visible = false
+		Environment.SilentTarget = nil
 		SaveSettings()
 	end)
 	
-	-- NEW: Silent Option Click
 	SilentOption.MouseButton1Click:Connect(function()
 		Environment.Settings.AimbotType = "Silent"
 		AimbotTypeBtn.Text = "Silent"
 		AimbotTypeDropdown.Visible = false
+		Environment.Locked = nil
+		if Animation then Animation:Cancel() end
 		SaveSettings()
 	end)
 	
-	-- Change Aimbot Bind
+	-- Chams Toggle
+	ChamsBtn.MouseButton1Click:Connect(function()
+		Environment.Settings.Chams = not Environment.Settings.Chams
+		if Environment.Settings.Chams then
+			ChamsBtn.TextColor3 = Color3.fromRGB(120, 255, 120)
+		else
+			ChamsBtn.TextColor3 = Color3.fromRGB(255, 120, 120)
+		end
+		UpdateChams()
+		SaveSettings()
+	end)
+	
+	-- ESP Toggle
+	ESPBtn.MouseButton1Click:Connect(function()
+		Environment.Settings.ESPEnabled = not Environment.Settings.ESPEnabled
+		if Environment.Settings.ESPEnabled then
+			ESPBtn.TextColor3 = Color3.fromRGB(120, 255, 120)
+			InitializeESP()
+		else
+			ESPBtn.TextColor3 = Color3.fromRGB(255, 120, 120)
+		end
+		SaveSettings()
+	end)
+	
+	-- ESP Color Input
+	ESPColorInput.FocusLost:Connect(function()
+		local text = ESPColorInput.Text:gsub("#", ""):upper()
+		if #text == 6 and text:match("^[0-9A-F]+$") then
+			Environment.Settings.ESPColor = text
+			ESPColorInput.Text = text
+			SaveSettings()
+		else
+			ESPColorInput.Text = Environment.Settings.ESPColor
+		end
+	end)
+	
+	-- Change Bind functions
 	ChangeBindBtn.MouseButton1Click:Connect(function()
 		if not WaitingForInput then
 			WaitingForInput = true
@@ -413,7 +823,6 @@ local function CreateGUI()
 		end
 	end)
 	
-	-- Change Menu Bind
 	ChangeMenuBindBtn.MouseButton1Click:Connect(function()
 		if not WaitingForInput then
 			WaitingForInput = true
@@ -435,6 +844,8 @@ local function CreateGUI()
 	-- Update UI
 	BindLabel.Text = "bind: " .. Environment.Settings.TriggerKey
 	AimbotTypeBtn.Text = Environment.Settings.AimbotType
+	ESPColorInput.Text = Environment.Settings.ESPColor
+	
 	if Environment.Settings.Enabled then
 		EnabledBtn.TextColor3 = Color3.fromRGB(120, 255, 120)
 	else
@@ -442,10 +853,22 @@ local function CreateGUI()
 		EnabledBtn.TextColor3 = Color3.fromRGB(255, 120, 120)
 	end
 	
+	if Environment.Settings.Chams then
+		ChamsBtn.TextColor3 = Color3.fromRGB(120, 255, 120)
+	else
+		ChamsBtn.TextColor3 = Color3.fromRGB(255, 120, 120)
+	end
+	
+	if Environment.Settings.ESPEnabled then
+		ESPBtn.TextColor3 = Color3.fromRGB(120, 255, 120)
+	else
+		ESPBtn.TextColor3 = Color3.fromRGB(255, 120, 120)
+	end
+	
 	return ScreenGui, MainFrame
 end
 
---// Functions
+--// Aimbot Functions
 
 local function SaveSettings()
 	if Environment.Settings.SaveSettings then
@@ -490,13 +913,15 @@ local function GetClosestPlayer()
 	end
 end
 
--- NEW: Silent Aim Function
 local function GetSilentTarget()
 	if Environment.FOVSettings.Enabled then
 		RequiredDistance = Environment.FOVSettings.Amount
 	else
 		RequiredDistance = 2000
 	end
+	
+	local closestTarget = nil
+	local closestDistance = RequiredDistance
 	
 	for _, v in next, Players:GetPlayers() do
 		if v ~= LocalPlayer then
@@ -508,14 +933,72 @@ local function GetSilentTarget()
 				local Vector, OnScreen = Camera:WorldToViewportPoint(v.Character[Environment.Settings.LockPart].Position)
 				local Distance = (Vector2.new(UserInputService:GetMouseLocation().X, UserInputService:GetMouseLocation().Y) - Vector2.new(Vector.X, Vector.Y)).Magnitude
 
-				if Distance < RequiredDistance and OnScreen then
-					RequiredDistance = Distance
-					return v
+				if Distance < closestDistance and OnScreen then
+					closestDistance = Distance
+					closestTarget = v
 				end
 			end
 		end
 	end
-	return nil
+	
+	return closestTarget
+end
+
+local function ExpandHitbox(player)
+	if not player or not player.Character then return end
+	
+	local character = player.Character
+	local humanoidRootPart = character:FindFirstChild("HumanoidRootPart")
+	if not humanoidRootPart then return end
+	
+	for _, part in pairs(character:GetDescendants()) do
+		if part:IsA("BasePart") then
+			local partId = tostring(part:GetFullName())
+			if not Environment.OriginalSizes[partId] then
+				Environment.OriginalSizes[partId] = {
+					Part = part,
+					Size = part.Size,
+					Transparency = part.Transparency,
+					CanCollide = part.CanCollide,
+					Massless = part.Massless
+				}
+			end
+			
+			local multiplier = Environment.Settings.SilentAimFOV
+			part.Size = Vector3.new(
+				Environment.OriginalSizes[partId].Size.X * multiplier,
+				Environment.OriginalSizes[partId].Size.Y * multiplier,
+				Environment.OriginalSizes[partId].Size.Z * multiplier
+			)
+			part.Massless = true
+			part.CanCollide = false
+			part.Transparency = 1 -- Always invisible for silent aim
+		end
+	end
+end
+
+local function RestoreHitbox(player)
+	if not player or not player.Character then return end
+	
+	local character = player.Character
+	local keysToRestore = {}
+	
+	for partId, data in pairs(Environment.OriginalSizes) do
+		if data.Part and data.Part:IsDescendantOf(character) then
+			table.insert(keysToRestore, partId)
+		end
+	end
+	
+	for _, partId in pairs(keysToRestore) do
+		local data = Environment.OriginalSizes[partId]
+		if data and data.Part and data.Part.Parent then
+			data.Part.Size = data.Size
+			data.Part.Transparency = data.Transparency
+			data.Part.CanCollide = data.CanCollide
+			data.Part.Massless = data.Massless
+			Environment.OriginalSizes[partId] = nil
+		end
+	end
 end
 
 --// Typing Check
@@ -560,7 +1043,102 @@ else
 end
 
 local function Load()
+	-- Initialize ESP for existing players
+	InitializeESP()
+	
+	-- Handle new players joining
+	ServiceConnections.PlayerAddedConnection = Players.PlayerAdded:Connect(function(player)
+		if player ~= LocalPlayer then
+			CreateESP(player)
+		end
+	end)
+	
+	-- Handle players leaving
+	ServiceConnections.PlayerRemovingConnection = Players.PlayerRemoving:Connect(function(player)
+		RemoveESP(player)
+		RemoveChams(player)
+		if Environment.SilentTarget == player then
+			RestoreHitbox(player)
+			Environment.SilentTarget = nil
+		end
+	end)
+	
+	-- Handle character respawns for all current players
+	for _, player in pairs(Players:GetPlayers()) do
+		if player ~= LocalPlayer then
+			player.CharacterAdded:Connect(function(character)
+				-- Wait a moment for character to fully load
+				task.wait(0.5)
+				RemoveChams(player)
+				RemoveESP(player)
+				if Environment.Settings.Chams then
+					CreateChams(player)
+				end
+				if Environment.Settings.ESPEnabled then
+					CreateESP(player)
+				end
+			end)
+		end
+	end
+	
+	-- Handle character respawns for new players
+	ServiceConnections.PlayerAddedConnection = Players.PlayerAdded:Connect(function(player)
+		if player ~= LocalPlayer then
+			CreateESP(player)
+			player.CharacterAdded:Connect(function(character)
+				task.wait(0.5)
+				RemoveChams(player)
+				RemoveESP(player)
+				if Environment.Settings.Chams then
+					CreateChams(player)
+				end
+				if Environment.Settings.ESPEnabled then
+					CreateESP(player)
+				end
+			end)
+		end
+	end)
+	
+	-- Periodic refresh for Chams and ESP (every 2 seconds)
+	ServiceConnections.PeriodicRefreshConnection = RunService.Heartbeat:Connect(function()
+		-- Use a counter to only refresh every ~2 seconds
+		if not Environment.RefreshCounter then
+			Environment.RefreshCounter = 0
+		end
+		
+		Environment.RefreshCounter = Environment.RefreshCounter + 1
+		
+		-- Refresh every 120 frames (approximately 2 seconds at 60 FPS)
+		if Environment.RefreshCounter >= 120 then
+			Environment.RefreshCounter = 0
+			
+			-- Refresh Chams
+			if Environment.Settings.Chams then
+				for _, player in pairs(Players:GetPlayers()) do
+					if player ~= LocalPlayer and player.Character then
+						if not Environment.ChamsHighlights[player] or not Environment.ChamsHighlights[player].Parent then
+							RemoveChams(player)
+							CreateChams(player)
+						end
+					end
+				end
+			end
+			
+			-- Refresh ESP
+			if Environment.Settings.ESPEnabled then
+				for _, player in pairs(Players:GetPlayers()) do
+					if player ~= LocalPlayer and player.Character then
+						if not Environment.ESPBoxes[player] then
+							CreateESP(player)
+						end
+					end
+				end
+			end
+		end
+	end)
+	
 	ServiceConnections.RenderSteppedConnection = RunService.RenderStepped:Connect(function()
+		-- FOV Circle
 		if Environment.FOVSettings.Enabled and Environment.Settings.Enabled then
 			Environment.FOVCircle.Radius = Environment.FOVSettings.Amount
 			Environment.FOVCircle.Thickness = Environment.FOVSettings.Thickness
@@ -573,11 +1151,24 @@ local function Load()
 		else
 			Environment.FOVCircle.Visible = false
 		end
+		
+		-- Update Chams (Rainbow)
+		if Environment.Settings.Chams then
+			UpdateChams()
+			for player, highlight in pairs(Environment.ChamsHighlights) do
+				if highlight and highlight.Parent then
+					highlight.FillColor = RainbowColor(0)
+					highlight.OutlineColor = RainbowColor(0.5)
+				end
+			end
+		end
+		
+		-- Update ESP
+		UpdateESPBoxes()
 
+		-- Aimbot
 		if Running and Environment.Settings.Enabled then
-			-- NEW: Check aimbot type
 			if Environment.Settings.AimbotType == "Memory" then
-				-- Original Memory/Lock-on behavior
 				GetClosestPlayer()
 
 				if Environment.Locked then
@@ -596,19 +1187,25 @@ local function Load()
 					Environment.FOVCircle.Color = GetColor(Environment.FOVSettings.LockedColor)
 				end
 			elseif Environment.Settings.AimbotType == "Silent" then
-				-- NEW: Silent aim behavior - just get target within FOV
-				local SilentTarget = GetSilentTarget()
+				local newTarget = GetSilentTarget()
 				
-				if SilentTarget then
-					Environment.Locked = SilentTarget
+				if Environment.SilentTarget and Environment.SilentTarget ~= newTarget then
+					RestoreHitbox(Environment.SilentTarget)
+				end
+				
+				Environment.SilentTarget = newTarget
+				
+				if Environment.SilentTarget then
+					ExpandHitbox(Environment.SilentTarget)
 					Environment.FOVCircle.Color = GetColor(Environment.FOVSettings.LockedColor)
-					
-					-- Silent aim instantly snaps to target (you can modify this behavior)
-					Camera.CFrame = CFrame.new(Camera.CFrame.Position, SilentTarget.Character[Environment.Settings.LockPart].Position)
 				else
-					Environment.Locked = nil
 					Environment.FOVCircle.Color = GetColor(Environment.FOVSettings.Color)
 				end
+			end
+		else
+			if Environment.SilentTarget then
+				RestoreHitbox(Environment.SilentTarget)
+				Environment.SilentTarget = nil
 			end
 		end
 	end)
@@ -621,6 +1218,10 @@ local function Load()
 						Running = not Running
 						if not Running then
 							Environment.Locked = nil
+							if Environment.SilentTarget then
+								RestoreHitbox(Environment.SilentTarget)
+								Environment.SilentTarget = nil
+							end
 							if Animation then Animation:Cancel() end
 							Environment.FOVCircle.Color = GetColor(Environment.FOVSettings.Color)
 						end
@@ -636,6 +1237,10 @@ local function Load()
 						Running = not Running
 						if not Running then
 							Environment.Locked = nil
+							if Environment.SilentTarget then
+								RestoreHitbox(Environment.SilentTarget)
+								Environment.SilentTarget = nil
+							end
 							if Animation then Animation:Cancel() end
 							Environment.FOVCircle.Color = GetColor(Environment.FOVSettings.Color)
 						end
@@ -654,6 +1259,10 @@ local function Load()
 					if not Environment.Settings.Toggle then
 						Running = false
 						Environment.Locked = nil
+						if Environment.SilentTarget then
+							RestoreHitbox(Environment.SilentTarget)
+							Environment.SilentTarget = nil
+						end
 						if Animation then Animation:Cancel() end
 						Environment.FOVCircle.Color = GetColor(Environment.FOVSettings.Color)
 					end
@@ -665,6 +1274,10 @@ local function Load()
 					if not Environment.Settings.Toggle then
 						Running = false
 						Environment.Locked = nil
+						if Environment.SilentTarget then
+							RestoreHitbox(Environment.SilentTarget)
+							Environment.SilentTarget = nil
+						end
 						if Animation then Animation:Cancel() end
 						Environment.FOVCircle.Color = GetColor(Environment.FOVSettings.Color)
 					end
@@ -679,6 +1292,31 @@ end
 Environment.Functions = {}
 
 function Environment.Functions:Exit()
+	-- Restore all hitboxes
+	local processedPlayers = {}
+	for partId, data in pairs(Environment.OriginalSizes) do
+		if data.Part and data.Part.Parent then
+			local character = data.Part:FindFirstAncestorOfClass("Model")
+			if character and not processedPlayers[character] then
+				local player = Players:GetPlayerFromCharacter(character)
+				if player then
+					RestoreHitbox(player)
+					processedPlayers[character] = true
+				end
+			end
+		end
+	end
+	
+	-- Remove all chams
+	for player, _ in pairs(Environment.ChamsHighlights) do
+		RemoveChams(player)
+	end
+	
+	-- Remove all ESP
+	for player, _ in pairs(Environment.ESPBoxes) do
+		RemoveESP(player)
+	end
+	
 	SaveSettings()
 	for _, v in next, ServiceConnections do
 		v:Disconnect()
@@ -714,7 +1352,11 @@ function Environment.Functions:ResetSettings()
 		TriggerKey = "MouseButton2",
 		Toggle = false,
 		LockPart = "Head",
-		AimbotType = "Memory"
+		AimbotType = "Memory",
+		SilentAimFOV = 3,
+		Chams = false,
+		ESPEnabled = false,
+		ESPColor = "FF0000"
 	}
 
 	Environment.FOVSettings = {
