@@ -68,15 +68,26 @@ menuButton.Size = UDim2.new(0, 50, 0, 50)
 menuButton.Position = UDim2.new(0.05, 0, 0.05, 0)
 menuButton.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
 menuButton.BorderSizePixel = 0
-menuButton.Text = "≡"
-menuButton.TextSize = 32
-menuButton.TextColor3 = Color3.fromRGB(255, 255, 255)
-menuButton.Font = Enum.Font.GothamBold
+menuButton.Text = ""
 menuButton.Parent = screenGui
 
 local menuCorner = Instance.new("UICorner")
-menuCorner.CornerRadius = UDim.new(0.15, 0)
+menuCorner.CornerRadius = UDim.new(0.1, 0)
 menuCorner.Parent = menuButton
+
+-- Add three horizontal lines to menu button
+for i = 0, 2 do
+	local line = Instance.new("Frame")
+	line.Size = UDim2.new(0.6, 0, 0, 3)
+	line.Position = UDim2.new(0.2, 0, 0.3 + (i * 0.2), 0)
+	line.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	line.BorderSizePixel = 0
+	line.Parent = menuButton
+	
+	local lineCorner = Instance.new("UICorner")
+	lineCorner.CornerRadius = UDim.new(1, 0)
+	lineCorner.Parent = line
+end
 
 --// Create Settings Frame (Dark theme like the image)
 local settingsFrame = Instance.new("Frame")
@@ -311,6 +322,36 @@ UserInputService.InputChanged:Connect(function(input)
 	end
 end)
 
+--// Draggable Menu Button
+local menuDragging, menuDragInput, menuDragStart, menuStartPos = false, nil, nil, nil
+
+menuButton.InputBegan:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1 then
+		menuDragging = true
+		menuDragStart = input.Position
+		menuStartPos = menuButton.Position
+		
+		input.Changed:Connect(function()
+			if input.UserInputState == Enum.UserInputState.End then
+				menuDragging = false
+			end
+		end)
+	end
+end)
+
+menuButton.InputChanged:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseMovement then
+		menuDragInput = input
+	end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+	if menuDragging and input == menuDragInput then
+		local delta = input.Position - menuDragStart
+		menuButton.Position = UDim2.new(menuStartPos.X.Scale, menuStartPos.X.Offset + delta.X, menuStartPos.Y.Scale, menuStartPos.Y.Offset + delta.Y)
+	end
+end)
+
 --// Main Loop
 RunService.RenderStepped:Connect(function()
 	if Running and Environment.Settings.Enabled and Environment.Locked then
@@ -357,9 +398,11 @@ shootButton.MouseButton1Up:Connect(function()
 	end
 end)
 
---// Menu Button
+--// Menu Button Click (after dragging check)
 menuButton.MouseButton1Click:Connect(function()
-	settingsFrame.Visible = not settingsFrame.Visible
+	if not menuDragging then
+		settingsFrame.Visible = not settingsFrame.Visible
+	end
 end)
 
 closeButton.MouseButton1Click:Connect(function()
