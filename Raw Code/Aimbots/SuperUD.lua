@@ -28,6 +28,8 @@ local Typing, Running, Animation, RequiredDistance, ServiceConnections = false, 
 local WaitingForInput = false
 local MenuToggleBind = Enum.KeyCode.RightAlt
 local MenuOpen = true
+local CurrentTab = "Aimbot"
+local ExpandedMode = false
 
 --// Support Functions
 
@@ -45,6 +47,7 @@ Environment.Settings = {
 	AliveCheck = true,
 	WallCheck = false,
 	Sensitivity = 0,
+	Smoothing = 0,
 	ThirdPerson = false,
 	ThirdPersonSensitivity = 3,
 	TriggerKey = "MouseButton2",
@@ -54,7 +57,12 @@ Environment.Settings = {
 	SilentAimFOV = 3,
 	Chams = false,
 	ESPEnabled = false,
-	ESPColor = "FF0000"
+	ESPColor = "FF0000",
+	FlingBind = "Z",
+	FlingPower = 1000,
+	GenieBullet = false,
+	TeleportBind = "X",
+	TeleportDistance = 10
 }
 
 Environment.FOVSettings = {
@@ -75,6 +83,10 @@ Environment.SilentTarget = nil
 Environment.OriginalSizes = {}
 Environment.ChamsHighlights = {}
 Environment.ESPBoxes = {}
+Environment.GUIElements = {}
+
+local OriginalCanCollideStates = {}
+local GenieBulletEnabled = false
 
 --// Core Functions
 
@@ -125,17 +137,117 @@ local function SendNotification(TitleArg, DescriptionArg, DurationArg)
 	end
 end
 
---// Chams Functions (Independent Rainbow Highlight)
+--// Genie Bullet Function (OPTIMIZED - only updates once per second)
+
+local function UpdateGenieBullet()
+	if not GenieBulletEnabled then return end
+	
+	-- Clear old states
+	for obj, originalState in pairs(OriginalCanCollideStates) do
+		if obj and obj.Parent then
+			obj.CanCollide = originalState
+		end
+	end
+	OriginalCanCollideStates = {}
+	
+	if not Environment.Settings.GenieBullet then
+		GenieBulletEnabled = false
+		return
+	end
+	
+	-- Update collision states
+	for _, obj in pairs(workspace:GetDescendants()) do
+		if obj:IsA("BasePart") then
+			local isCharacterPart = false
+			
+			if LocalPlayer.Character and obj:IsDescendantOf(LocalPlayer.Character) then
+				isCharacterPart = true
+			end
+			
+			if not isCharacterPart then
+				for _, player in pairs(Players:GetPlayers()) do
+					if player.Character and obj:IsDescendantOf(player.Character) then
+						isCharacterPart = true
+						break
+					end
+				end
+			end
+			
+			if not isCharacterPart and obj.CanCollide then
+				OriginalCanCollideStates[obj] = true
+				obj.CanCollide = false
+			end
+		end
+	end
+end
+
+local function EnableGenieBullet()
+	GenieBulletEnabled = true
+	UpdateGenieBullet()
+	
+	-- Update every 1 second instead of every frame
+	task.spawn(function()
+		while GenieBulletEnabled do
+			task.wait(1)
+			UpdateGenieBullet()
+		end
+	end)
+end
+
+local function DisableGenieBullet()
+	GenieBulletEnabled = false
+	for obj, originalState in pairs(OriginalCanCollideStates) do
+		if obj and obj.Parent then
+			obj.CanCollide = originalState
+		end
+	end
+	OriginalCanCollideStates = {}
+end
+
+--// Fling Function
+
+local function FlingPlayer()
+	local character = LocalPlayer.Character
+	if not character then return end
+	
+	local hrp = character:FindFirstChild("HumanoidRootPart")
+	local humanoid = character:FindFirstChild("Humanoid")
+	if not hrp or not humanoid then return end
+	
+	local bodyVelocity = Instance.new("BodyVelocity")
+	bodyVelocity.Velocity = Vector3.new(0, Environment.Settings.FlingPower, 0)
+	bodyVelocity.MaxForce = Vector3.new(0, math.huge, 0)
+	bodyVelocity.Parent = hrp
+	
+	task.delay(0.2, function()
+		if bodyVelocity and bodyVelocity.Parent then
+			bodyVelocity:Destroy()
+		end
+	end)
+end
+
+--// Teleport Function
+
+local function TeleportForward()
+	local character = LocalPlayer.Character
+	if not character then return end
+	
+	local hrp = character:FindFirstChild("HumanoidRootPart")
+	if not hrp then return end
+	
+	local lookVector = hrp.CFrame.LookVector
+	hrp.CFrame = hrp.CFrame + (lookVector * Environment.Settings.TeleportDistance)
+end
+
+--// Chams Functions
 
 local function CreateChams(player)
 	if not player or not player.Character then return end
 	
-	-- Remove existing chams first
 	if Environment.ChamsHighlights[player] then
 		RemoveChams(player)
 	end
 	
-	-- Wait for character to fully load
 	local character = player.Character
 	if not character:FindFirstChild("HumanoidRootPart") then
 		character:WaitForChild("HumanoidRootPart", 3)
@@ -180,17 +292,15 @@ local function UpdateChams()
 	end
 end
 
---// ESP Functions (Box around players with custom color)
+--// ESP Functions
 
 local function CreateESP(player)
 	if not player then return end
 	
-	-- Remove existing ESP first
 	if Environment.ESPBoxes[player] then
 		RemoveESP(player)
 	end
 	
-	-- Wait for character
 	if not player.Character then
 		player.CharacterAdded:Wait()
 	end
@@ -204,7 +314,6 @@ local function CreateESP(player)
 	end
 	if not hrp then return end
 	
-	-- Create ESP box using Drawing library
 	local box = {
 		TopLeft = Drawing.new("Line"),
 		TopRight = Drawing.new("Line"),
@@ -279,7 +388,6 @@ local function UpdateESPBoxes()
 			continue
 		end
 		
-		-- Calculate box dimensions
 		local headPos = Camera:WorldToViewportPoint(head.Position + Vector3.new(0, 0.5, 0))
 		local legPos = Camera:WorldToViewportPoint(hrp.Position - Vector3.new(0, 3, 0))
 		
@@ -291,7 +399,6 @@ local function UpdateESPBoxes()
 		
 		local espColor = HexToRGB(Environment.Settings.ESPColor)
 		
-		-- Update box lines
 		box.TopLeft.From = Vector2.new(x, y)
 		box.TopLeft.To = Vector2.new(x, y + height / 4)
 		box.TopLeft.Visible = true
@@ -332,7 +439,6 @@ local function UpdateESPBoxes()
 		box.BottomSide.Visible = true
 		box.BottomSide.Color = espColor
 		
-		-- Update name
 		box.Name.Position = Vector2.new(x + width / 2, y - 20)
 		box.Name.Text = player.Name
 		box.Name.Visible = true
@@ -340,7 +446,6 @@ local function UpdateESPBoxes()
 	end
 end
 
---// Create ESP for all players
 local function InitializeESP()
 	for _, player in pairs(Players:GetPlayers()) do
 		if player ~= LocalPlayer then
@@ -349,41 +454,115 @@ local function InitializeESP()
 	end
 end
 
+--// Expand/Collapse Functions
+
+local ExpandedWindows = {}
+
+local function ExpandAll()
+	if ExpandedMode then return end
+	ExpandedMode = true
+	
+	-- Hide main frame
+	Environment.GUIElements.MainFrame.Visible = false
+	
+	-- Create separate windows for each tab
+	local tabs = {
+		{name = "Aimbot", content = Environment.GUIElements.AimbotContent, x = 0.05},
+		{name = "Rage", content = Environment.GUIElements.RageContent, x = 0.25},
+		{name = "Visuals", content = Environment.GUIElements.VisualsContent, x = 0.45},
+		{name = "Settings", content = Environment.GUIElements.SettingsContent, x = 0.65}
+	}
+	
+	for _, tab in ipairs(tabs) do
+		-- Create new frame
+		local frame = Instance.new("Frame")
+		frame.Name = tab.name .. "Window"
+		frame.Parent = game.CoreGui:FindFirstChild("AimbotGUI")
+		frame.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
+		frame.BorderColor3 = Color3.fromRGB(60, 60, 60)
+		frame.BorderSizePixel = 1
+		frame.Position = UDim2.new(tab.x, 0, 0.3, 0)
+		frame.Size = UDim2.new(0, 240, 0, 450)
+		frame.Active = true
+		frame.Draggable = true
+		
+		-- Title
+		local title = Instance.new("TextLabel")
+		title.Parent = frame
+		title.BackgroundTransparency = 1
+		title.Position = UDim2.new(0, 0, 0, 0)
+		title.Size = UDim2.new(1, 0, 0, 25)
+		title.Font = Enum.Font.Code
+		title.Text = "  " .. tab.name:lower()
+		title.TextColor3 = Color3.fromRGB(255, 255, 255)
+		title.TextSize = 14
+		title.TextXAlignment = Enum.TextXAlignment.Left
+		title.TextTransparency = 0.3
+		
+		-- Line
+		local line = Instance.new("Frame")
+		line.Parent = frame
+		line.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
+		line.BorderSizePixel = 0
+		line.Position = UDim2.new(0, 0, 0, 25)
+		line.Size = UDim2.new(1, 0, 0, 1)
+		
+		-- Clone content
+		local contentClone = tab.content:Clone()
+		contentClone.Parent = frame
+		contentClone.Position = UDim2.new(0, 0, 0, 26)
+		contentClone.Size = UDim2.new(1, 0, 1, -26)
+		contentClone.Visible = true
+		
+		-- If this is the Settings window, reconnect the collapse all button
+		if tab.name == "Settings" then
+			local collapseBtn = contentClone:FindFirstChild("CollapseAllBtn")
+			if collapseBtn then
+				collapseBtn.MouseButton1Click:Connect(function()
+					CollapseAll()
+				end)
+			end
+		end
+		
+		table.insert(ExpandedWindows, frame)
+	end
+end
+
+local function CollapseAll()
+	if not ExpandedMode then return end
+	ExpandedMode = false
+	
+	-- Destroy expanded windows
+	for _, window in ipairs(ExpandedWindows) do
+		if window and window.Parent then
+			window:Destroy()
+		end
+	end
+	ExpandedWindows = {}
+	
+	-- Show main frame
+	Environment.GUIElements.MainFrame.Visible = true
+end
+
 --// GUI Creation
 
 local function CreateGUI()
 	local ScreenGui = Instance.new("ScreenGui")
 	local MainFrame = Instance.new("Frame")
-	local Title = Instance.new("TextLabel")
+	local TitleLabel = Instance.new("TextLabel")
 	local Line = Instance.new("Frame")
-	local EnabledBtn = Instance.new("TextButton")
-	local ChangeBindBtn = Instance.new("TextButton")
-	local ChangeMenuBindBtn = Instance.new("TextButton")
-	local BindLabel = Instance.new("TextLabel")
-	local MenuBindLabel = Instance.new("TextLabel")
-	local FOVLabel = Instance.new("TextLabel")
-	local FOVSlider = Instance.new("TextButton")
-	local FOVFill = Instance.new("Frame")
-	local FOVValueLabel = Instance.new("TextLabel")
 	
-	local AimbotTypeLabel = Instance.new("TextLabel")
-	local AimbotTypeBtn = Instance.new("TextButton")
-	local AimbotTypeDropdown = Instance.new("Frame")
-	local MemoryOption = Instance.new("TextButton")
-	local SilentOption = Instance.new("TextButton")
+	-- Tab buttons
+	local AimbotTabBtn = Instance.new("TextButton")
+	local RageTabBtn = Instance.new("TextButton")
+	local VisualsTabBtn = Instance.new("TextButton")
+	local SettingsTabBtn = Instance.new("TextButton")
 	
-	local SilentFOVLabel = Instance.new("TextLabel")
-	local SilentFOVSlider = Instance.new("TextButton")
-	local SilentFOVFill = Instance.new("Frame")
-	local SilentFOVValueLabel = Instance.new("TextLabel")
-	
-	-- NEW: Chams Button
-	local ChamsBtn = Instance.new("TextButton")
-	
-	-- NEW: ESP Section
-	local ESPBtn = Instance.new("TextButton")
-	local ESPColorLabel = Instance.new("TextLabel")
-	local ESPColorInput = Instance.new("TextBox")
+	-- Content frames
+	local AimbotContent = Instance.new("Frame")
+	local RageContent = Instance.new("Frame")
+	local VisualsContent = Instance.new("Frame")
+	local SettingsContent = Instance.new("Frame")
 	
 	ScreenGui.Name = "AimbotGUI"
 	ScreenGui.Parent = game.CoreGui
@@ -396,21 +575,21 @@ local function CreateGUI()
 	MainFrame.BorderColor3 = Color3.fromRGB(60, 60, 60)
 	MainFrame.BorderSizePixel = 1
 	MainFrame.Position = UDim2.new(0.05, 0, 0.3, 0)
-	MainFrame.Size = UDim2.new(0, 220, 0, 450)
+	MainFrame.Size = UDim2.new(0, 300, 0, 450)
 	MainFrame.Active = true
 	MainFrame.Draggable = true
 	
-	Title.Name = "Title"
-	Title.Parent = MainFrame
-	Title.BackgroundTransparency = 1
-	Title.Position = UDim2.new(0, 0, 0, 0)
-	Title.Size = UDim2.new(1, 0, 0, 25)
-	Title.Font = Enum.Font.Code
-	Title.Text = "  aimbot"
-	Title.TextColor3 = Color3.fromRGB(255, 255, 255)
-	Title.TextSize = 14
-	Title.TextXAlignment = Enum.TextXAlignment.Left
-	Title.TextTransparency = 0.3
+	TitleLabel.Name = "Title"
+	TitleLabel.Parent = MainFrame
+	TitleLabel.BackgroundTransparency = 1
+	TitleLabel.Position = UDim2.new(0, 0, 0, 0)
+	TitleLabel.Size = UDim2.new(1, 0, 0, 25)
+	TitleLabel.Font = Enum.Font.Code
+	TitleLabel.Text = "  aimbot"
+	TitleLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+	TitleLabel.TextSize = 14
+	TitleLabel.TextXAlignment = Enum.TextXAlignment.Left
+	TitleLabel.TextTransparency = 0.3
 	
 	Line.Name = "Line"
 	Line.Parent = MainFrame
@@ -419,451 +598,850 @@ local function CreateGUI()
 	Line.Position = UDim2.new(0, 0, 0, 25)
 	Line.Size = UDim2.new(1, 0, 0, 1)
 	
-	EnabledBtn.Name = "EnabledBtn"
-	EnabledBtn.Parent = MainFrame
-	EnabledBtn.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
-	EnabledBtn.BorderColor3 = Color3.fromRGB(60, 60, 60)
-	EnabledBtn.Position = UDim2.new(0, 10, 0, 35)
-	EnabledBtn.Size = UDim2.new(0, 90, 0, 22)
-	EnabledBtn.Font = Enum.Font.Code
-	EnabledBtn.Text = "enabled"
-	EnabledBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-	EnabledBtn.TextSize = 13
+	-- Tab buttons (vertical on right side)
+	AimbotTabBtn.Name = "AimbotTabBtn"
+	AimbotTabBtn.Parent = MainFrame
+	AimbotTabBtn.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
+	AimbotTabBtn.BorderSizePixel = 0
+	AimbotTabBtn.Position = UDim2.new(1, -55, 0, 35)
+	AimbotTabBtn.Size = UDim2.new(0, 50, 0, 25)
+	AimbotTabBtn.Font = Enum.Font.Code
+	AimbotTabBtn.Text = "aimbot"
+	AimbotTabBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+	AimbotTabBtn.TextSize = 10
 	
-	AimbotTypeLabel.Name = "AimbotTypeLabel"
-	AimbotTypeLabel.Parent = MainFrame
-	AimbotTypeLabel.BackgroundTransparency = 1
-	AimbotTypeLabel.Position = UDim2.new(0, 10, 0, 62)
-	AimbotTypeLabel.Size = UDim2.new(1, -20, 0, 20)
-	AimbotTypeLabel.Font = Enum.Font.Code
-	AimbotTypeLabel.Text = "aimbot type"
-	AimbotTypeLabel.TextColor3 = Color3.fromRGB(180, 180, 180)
-	AimbotTypeLabel.TextSize = 12
-	AimbotTypeLabel.TextXAlignment = Enum.TextXAlignment.Left
+	RageTabBtn.Name = "RageTabBtn"
+	RageTabBtn.Parent = MainFrame
+	RageTabBtn.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
+	RageTabBtn.BorderSizePixel = 0
+	RageTabBtn.Position = UDim2.new(1, -55, 0, 60)
+	RageTabBtn.Size = UDim2.new(0, 50, 0, 25)
+	RageTabBtn.Font = Enum.Font.Code
+	RageTabBtn.Text = "rage"
+	RageTabBtn.TextColor3 = Color3.fromRGB(180, 180, 180)
+	RageTabBtn.TextSize = 10
 	
-	AimbotTypeBtn.Name = "AimbotTypeBtn"
-	AimbotTypeBtn.Parent = MainFrame
-	AimbotTypeBtn.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
-	AimbotTypeBtn.BorderColor3 = Color3.fromRGB(60, 60, 60)
-	AimbotTypeBtn.Position = UDim2.new(0, 10, 0, 85)
-	AimbotTypeBtn.Size = UDim2.new(0, 90, 0, 22)
-	AimbotTypeBtn.Font = Enum.Font.Code
-	AimbotTypeBtn.Text = "Memory"
-	AimbotTypeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-	AimbotTypeBtn.TextSize = 13
-	AimbotTypeBtn.ZIndex = 2
+	VisualsTabBtn.Name = "VisualsTabBtn"
+	VisualsTabBtn.Parent = MainFrame
+	VisualsTabBtn.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
+	VisualsTabBtn.BorderSizePixel = 0
+	VisualsTabBtn.Position = UDim2.new(1, -55, 0, 85)
+	VisualsTabBtn.Size = UDim2.new(0, 50, 0, 25)
+	VisualsTabBtn.Font = Enum.Font.Code
+	VisualsTabBtn.Text = "visuals"
+	VisualsTabBtn.TextColor3 = Color3.fromRGB(180, 180, 180)
+	VisualsTabBtn.TextSize = 10
 	
-	AimbotTypeDropdown.Name = "AimbotTypeDropdown"
-	AimbotTypeDropdown.Parent = MainFrame
-	AimbotTypeDropdown.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
-	AimbotTypeDropdown.BorderColor3 = Color3.fromRGB(60, 60, 60)
-	AimbotTypeDropdown.Position = UDim2.new(0, 10, 0, 107)
-	AimbotTypeDropdown.Size = UDim2.new(0, 90, 0, 44)
-	AimbotTypeDropdown.Visible = false
-	AimbotTypeDropdown.ZIndex = 3
+	SettingsTabBtn.Name = "SettingsTabBtn"
+	SettingsTabBtn.Parent = MainFrame
+	SettingsTabBtn.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
+	SettingsTabBtn.BorderSizePixel = 0
+	SettingsTabBtn.Position = UDim2.new(1, -55, 0, 110)
+	SettingsTabBtn.Size = UDim2.new(0, 50, 0, 25)
+	SettingsTabBtn.Font = Enum.Font.Code
+	SettingsTabBtn.Text = "settings"
+	SettingsTabBtn.TextColor3 = Color3.fromRGB(180, 180, 180)
+	SettingsTabBtn.TextSize = 9
 	
-	MemoryOption.Name = "MemoryOption"
-	MemoryOption.Parent = AimbotTypeDropdown
-	MemoryOption.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
-	MemoryOption.BorderColor3 = Color3.fromRGB(60, 60, 60)
-	MemoryOption.BorderSizePixel = 0
-	MemoryOption.Position = UDim2.new(0, 0, 0, 0)
-	MemoryOption.Size = UDim2.new(1, 0, 0, 22)
-	MemoryOption.Font = Enum.Font.Code
-	MemoryOption.Text = "Memory"
-	MemoryOption.TextColor3 = Color3.fromRGB(255, 255, 255)
-	MemoryOption.TextSize = 12
-	MemoryOption.ZIndex = 4
+	-- Content frames
+	AimbotContent.Name = "AimbotContent"
+	AimbotContent.Parent = MainFrame
+	AimbotContent.BackgroundTransparency = 1
+	AimbotContent.Position = UDim2.new(0, 0, 0, 35)
+	AimbotContent.Size = UDim2.new(1, -60, 1, -35)
+	AimbotContent.Visible = true
 	
-	SilentOption.Name = "SilentOption"
-	SilentOption.Parent = AimbotTypeDropdown
-	SilentOption.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
-	SilentOption.BorderColor3 = Color3.fromRGB(60, 60, 60)
-	SilentOption.BorderSizePixel = 0
-	SilentOption.Position = UDim2.new(0, 0, 0, 22)
-	SilentOption.Size = UDim2.new(1, 0, 0, 22)
-	SilentOption.Font = Enum.Font.Code
-	SilentOption.Text = "Silent"
-	SilentOption.TextColor3 = Color3.fromRGB(255, 255, 255)
-	SilentOption.TextSize = 12
-	SilentOption.ZIndex = 4
+	RageContent.Name = "RageContent"
+	RageContent.Parent = MainFrame
+	RageContent.BackgroundTransparency = 1
+	RageContent.Position = UDim2.new(0, 0, 0, 35)
+	RageContent.Size = UDim2.new(1, -60, 1, -35)
+	RageContent.Visible = false
 	
-	ChangeBindBtn.Name = "ChangeBindBtn"
-	ChangeBindBtn.Parent = MainFrame
-	ChangeBindBtn.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
-	ChangeBindBtn.BorderColor3 = Color3.fromRGB(60, 60, 60)
-	ChangeBindBtn.Position = UDim2.new(0, 10, 0, 118)
-	ChangeBindBtn.Size = UDim2.new(0, 90, 0, 22)
-	ChangeBindBtn.Font = Enum.Font.Code
-	ChangeBindBtn.Text = "change bind"
-	ChangeBindBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-	ChangeBindBtn.TextSize = 13
+	VisualsContent.Name = "VisualsContent"
+	VisualsContent.Parent = MainFrame
+	VisualsContent.BackgroundTransparency = 1
+	VisualsContent.Position = UDim2.new(0, 0, 0, 35)
+	VisualsContent.Size = UDim2.new(1, -60, 1, -35)
+	VisualsContent.Visible = false
 	
-	ChangeMenuBindBtn.Name = "ChangeMenuBindBtn"
-	ChangeMenuBindBtn.Parent = MainFrame
-	ChangeMenuBindBtn.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
-	ChangeMenuBindBtn.BorderColor3 = Color3.fromRGB(60, 60, 60)
-	ChangeMenuBindBtn.Position = UDim2.new(0, 10, 0, 170)
-	ChangeMenuBindBtn.Size = UDim2.new(0, 90, 0, 22)
-	ChangeMenuBindBtn.Font = Enum.Font.Code
-	ChangeMenuBindBtn.Text = "menu bind"
-	ChangeMenuBindBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-	ChangeMenuBindBtn.TextSize = 13
+	SettingsContent.Name = "SettingsContent"
+	SettingsContent.Parent = MainFrame
+	SettingsContent.BackgroundTransparency = 1
+	SettingsContent.Position = UDim2.new(0, 0, 0, 35)
+	SettingsContent.Size = UDim2.new(1, -60, 1, -35)
+	SettingsContent.Visible = false
 	
-	BindLabel.Name = "BindLabel"
-	BindLabel.Parent = MainFrame
-	BindLabel.BackgroundTransparency = 1
-	BindLabel.Position = UDim2.new(0, 10, 0, 143)
-	BindLabel.Size = UDim2.new(1, -20, 0, 20)
-	BindLabel.Font = Enum.Font.Code
-	BindLabel.Text = "bind: MouseButton2"
-	BindLabel.TextColor3 = Color3.fromRGB(180, 180, 180)
-	BindLabel.TextSize = 12
-	BindLabel.TextXAlignment = Enum.TextXAlignment.Left
+	-- Store GUI elements
+	Environment.GUIElements.MainFrame = MainFrame
+	Environment.GUIElements.AimbotContent = AimbotContent
+	Environment.GUIElements.RageContent = RageContent
+	Environment.GUIElements.VisualsContent = VisualsContent
+	Environment.GUIElements.SettingsContent = SettingsContent
 	
-	MenuBindLabel.Name = "MenuBindLabel"
-	MenuBindLabel.Parent = MainFrame
-	MenuBindLabel.BackgroundTransparency = 1
-	MenuBindLabel.Position = UDim2.new(0, 10, 0, 195)
-	MenuBindLabel.Size = UDim2.new(1, -20, 0, 20)
-	MenuBindLabel.Font = Enum.Font.Code
-	MenuBindLabel.Text = "menu: RightAlt"
-	MenuBindLabel.TextColor3 = Color3.fromRGB(180, 180, 180)
-	MenuBindLabel.TextSize = 12
-	MenuBindLabel.TextXAlignment = Enum.TextXAlignment.Left
-	
-	FOVLabel.Name = "FOVLabel"
-	FOVLabel.Parent = MainFrame
-	FOVLabel.BackgroundTransparency = 1
-	FOVLabel.Position = UDim2.new(0, 10, 0, 220)
-	FOVLabel.Size = UDim2.new(1, -20, 0, 20)
-	FOVLabel.Font = Enum.Font.Code
-	FOVLabel.Text = "fov"
-	FOVLabel.TextColor3 = Color3.fromRGB(180, 180, 180)
-	FOVLabel.TextSize = 12
-	FOVLabel.TextXAlignment = Enum.TextXAlignment.Left
-	
-	FOVSlider.Name = "FOVSlider"
-	FOVSlider.Parent = MainFrame
-	FOVSlider.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
-	FOVSlider.BorderColor3 = Color3.fromRGB(60, 60, 60)
-	FOVSlider.Position = UDim2.new(0, 10, 0, 245)
-	FOVSlider.Size = UDim2.new(0, 150, 0, 20)
-	FOVSlider.AutoButtonColor = false
-	FOVSlider.Text = ""
-	
-	FOVFill.Name = "FOVFill"
-	FOVFill.Parent = FOVSlider
-	FOVFill.BackgroundColor3 = Color3.fromRGB(70, 70, 70)
-	FOVFill.BorderSizePixel = 0
-	FOVFill.Size = UDim2.new(0.857, 0, 1, 0)
-	
-	FOVValueLabel.Name = "FOVValueLabel"
-	FOVValueLabel.Parent = MainFrame
-	FOVValueLabel.BackgroundTransparency = 1
-	FOVValueLabel.Position = UDim2.new(0, 165, 0, 245)
-	FOVValueLabel.Size = UDim2.new(0, 45, 0, 20)
-	FOVValueLabel.Font = Enum.Font.Code
-	FOVValueLabel.Text = "90"
-	FOVValueLabel.TextColor3 = Color3.fromRGB(180, 180, 180)
-	FOVValueLabel.TextSize = 12
-	
-	SilentFOVLabel.Name = "SilentFOVLabel"
-	SilentFOVLabel.Parent = MainFrame
-	SilentFOVLabel.BackgroundTransparency = 1
-	SilentFOVLabel.Position = UDim2.new(0, 10, 0, 270)
-	SilentFOVLabel.Size = UDim2.new(1, -20, 0, 20)
-	SilentFOVLabel.Font = Enum.Font.Code
-	SilentFOVLabel.Text = "silent hitbox"
-	SilentFOVLabel.TextColor3 = Color3.fromRGB(180, 180, 180)
-	SilentFOVLabel.TextSize = 12
-	SilentFOVLabel.TextXAlignment = Enum.TextXAlignment.Left
-	
-	SilentFOVSlider.Name = "SilentFOVSlider"
-	SilentFOVSlider.Parent = MainFrame
-	SilentFOVSlider.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
-	SilentFOVSlider.BorderColor3 = Color3.fromRGB(60, 60, 60)
-	SilentFOVSlider.Position = UDim2.new(0, 10, 0, 295)
-	SilentFOVSlider.Size = UDim2.new(0, 150, 0, 20)
-	SilentFOVSlider.AutoButtonColor = false
-	SilentFOVSlider.Text = ""
-	
-	SilentFOVFill.Name = "SilentFOVFill"
-	SilentFOVFill.Parent = SilentFOVSlider
-	SilentFOVFill.BackgroundColor3 = Color3.fromRGB(70, 70, 70)
-	SilentFOVFill.BorderSizePixel = 0
-	SilentFOVFill.Size = UDim2.new(0.2, 0, 1, 0)
-	
-	SilentFOVValueLabel.Name = "SilentFOVValueLabel"
-	SilentFOVValueLabel.Parent = MainFrame
-	SilentFOVValueLabel.BackgroundTransparency = 1
-	SilentFOVValueLabel.Position = UDim2.new(0, 165, 0, 295)
-	SilentFOVValueLabel.Size = UDim2.new(0, 45, 0, 20)
-	SilentFOVValueLabel.Font = Enum.Font.Code
-	SilentFOVValueLabel.Text = "3"
-	SilentFOVValueLabel.TextColor3 = Color3.fromRGB(180, 180, 180)
-	SilentFOVValueLabel.TextSize = 12
-	
-	-- NEW: Chams Button
-	ChamsBtn.Name = "ChamsBtn"
-	ChamsBtn.Parent = MainFrame
-	ChamsBtn.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
-	ChamsBtn.BorderColor3 = Color3.fromRGB(60, 60, 60)
-	ChamsBtn.Position = UDim2.new(0, 10, 0, 325)
-	ChamsBtn.Size = UDim2.new(0, 90, 0, 22)
-	ChamsBtn.Font = Enum.Font.Code
-	ChamsBtn.Text = "chams"
-	ChamsBtn.TextColor3 = Color3.fromRGB(255, 120, 120)
-	ChamsBtn.TextSize = 13
-	
-	-- NEW: ESP Button
-	ESPBtn.Name = "ESPBtn"
-	ESPBtn.Parent = MainFrame
-	ESPBtn.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
-	ESPBtn.BorderColor3 = Color3.fromRGB(60, 60, 60)
-	ESPBtn.Position = UDim2.new(0, 10, 0, 357)
-	ESPBtn.Size = UDim2.new(0, 90, 0, 22)
-	ESPBtn.Font = Enum.Font.Code
-	ESPBtn.Text = "esp"
-	ESPBtn.TextColor3 = Color3.fromRGB(255, 120, 120)
-	ESPBtn.TextSize = 13
-	
-	-- NEW: ESP Color Label
-	ESPColorLabel.Name = "ESPColorLabel"
-	ESPColorLabel.Parent = MainFrame
-	ESPColorLabel.BackgroundTransparency = 1
-	ESPColorLabel.Position = UDim2.new(0, 10, 0, 387)
-	ESPColorLabel.Size = UDim2.new(1, -20, 0, 20)
-	ESPColorLabel.Font = Enum.Font.Code
-	ESPColorLabel.Text = "esp color (hex)"
-	ESPColorLabel.TextColor3 = Color3.fromRGB(180, 180, 180)
-	ESPColorLabel.TextSize = 12
-	ESPColorLabel.TextXAlignment = Enum.TextXAlignment.Left
-	
-	-- NEW: ESP Color Input
-	ESPColorInput.Name = "ESPColorInput"
-	ESPColorInput.Parent = MainFrame
-	ESPColorInput.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
-	ESPColorInput.BorderColor3 = Color3.fromRGB(60, 60, 60)
-	ESPColorInput.Position = UDim2.new(0, 10, 0, 412)
-	ESPColorInput.Size = UDim2.new(0, 90, 0, 22)
-	ESPColorInput.Font = Enum.Font.Code
-	ESPColorInput.Text = "FF0000"
-	ESPColorInput.TextColor3 = Color3.fromRGB(255, 255, 255)
-	ESPColorInput.TextSize = 13
-	ESPColorInput.PlaceholderText = "FF0000"
-	ESPColorInput.ClearTextOnFocus = false
-	
-	-- Slider functionality
-	local dragging = false
-	local function updateFOV(input)
-		local pos = math.clamp((input.Position.X - FOVSlider.AbsolutePosition.X) / FOVSlider.AbsoluteSize.X, 0, 1)
-		local fovValue = math.floor(15 + (pos * 285))
-		Environment.FOVSettings.Amount = fovValue
-		FOVFill.Size = UDim2.new(pos, 0, 1, 0)
-		FOVValueLabel.Text = tostring(fovValue)
-	end
-	
-	FOVSlider.InputBegan:Connect(function(input)
-		if input.UserInputType == Enum.UserInputType.MouseButton1 then
-			dragging = true
-			updateFOV(input)
+	-- Create all tab contents
+	local function CreateAimbotTab()
+		local EnabledBtn = Instance.new("TextButton")
+		EnabledBtn.Name = "EnabledBtn"
+		EnabledBtn.Parent = AimbotContent
+		EnabledBtn.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
+		EnabledBtn.BorderColor3 = Color3.fromRGB(60, 60, 60)
+		EnabledBtn.Position = UDim2.new(0, 10, 0, 5)
+		EnabledBtn.Size = UDim2.new(0, 90, 0, 22)
+		EnabledBtn.Font = Enum.Font.Code
+		EnabledBtn.Text = "disabled"
+		EnabledBtn.TextColor3 = Color3.fromRGB(255, 120, 120)
+		EnabledBtn.TextSize = 13
+		
+		local AimbotTypeLabel = Instance.new("TextLabel")
+		AimbotTypeLabel.Parent = AimbotContent
+		AimbotTypeLabel.BackgroundTransparency = 1
+		AimbotTypeLabel.Position = UDim2.new(0, 10, 0, 32)
+		AimbotTypeLabel.Size = UDim2.new(1, -20, 0, 20)
+		AimbotTypeLabel.Font = Enum.Font.Code
+		AimbotTypeLabel.Text = "aimbot type"
+		AimbotTypeLabel.TextColor3 = Color3.fromRGB(180, 180, 180)
+		AimbotTypeLabel.TextSize = 12
+		AimbotTypeLabel.TextXAlignment = Enum.TextXAlignment.Left
+		
+		local AimbotTypeBtn = Instance.new("TextButton")
+		AimbotTypeBtn.Parent = AimbotContent
+		AimbotTypeBtn.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
+		AimbotTypeBtn.BorderColor3 = Color3.fromRGB(60, 60, 60)
+		AimbotTypeBtn.Position = UDim2.new(0, 10, 0, 55)
+		AimbotTypeBtn.Size = UDim2.new(0, 90, 0, 22)
+		AimbotTypeBtn.Font = Enum.Font.Code
+		AimbotTypeBtn.Text = "Memory"
+		AimbotTypeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+		AimbotTypeBtn.TextSize = 13
+		AimbotTypeBtn.ZIndex = 2
+		
+		local AimbotTypeDropdown = Instance.new("Frame")
+		AimbotTypeDropdown.Parent = AimbotContent
+		AimbotTypeDropdown.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
+		AimbotTypeDropdown.BorderColor3 = Color3.fromRGB(60, 60, 60)
+		AimbotTypeDropdown.Position = UDim2.new(0, 10, 0, 77)
+		AimbotTypeDropdown.Size = UDim2.new(0, 90, 0, 44)
+		AimbotTypeDropdown.Visible = false
+		AimbotTypeDropdown.ZIndex = 3
+		
+		local MemoryOption = Instance.new("TextButton")
+		MemoryOption.Parent = AimbotTypeDropdown
+		MemoryOption.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+		MemoryOption.BorderSizePixel = 0
+		MemoryOption.Size = UDim2.new(1, 0, 0, 22)
+		MemoryOption.Font = Enum.Font.Code
+		MemoryOption.Text = "Memory"
+		MemoryOption.TextColor3 = Color3.fromRGB(255, 255, 255)
+		MemoryOption.TextSize = 12
+		MemoryOption.ZIndex = 4
+		
+		local SilentOption = Instance.new("TextButton")
+		SilentOption.Parent = AimbotTypeDropdown
+		SilentOption.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+		SilentOption.BorderSizePixel = 0
+		SilentOption.Position = UDim2.new(0, 0, 0, 22)
+		SilentOption.Size = UDim2.new(1, 0, 0, 22)
+		SilentOption.Font = Enum.Font.Code
+		SilentOption.Text = "Silent"
+		SilentOption.TextColor3 = Color3.fromRGB(255, 255, 255)
+		SilentOption.TextSize = 12
+		SilentOption.ZIndex = 4
+		
+		-- FOV Slider
+		local FOVLabel = Instance.new("TextLabel")
+		FOVLabel.Parent = AimbotContent
+		FOVLabel.BackgroundTransparency = 1
+		FOVLabel.Position = UDim2.new(0, 10, 0, 130)
+		FOVLabel.Size = UDim2.new(1, -20, 0, 20)
+		FOVLabel.Font = Enum.Font.Code
+		FOVLabel.Text = "fov"
+		FOVLabel.TextColor3 = Color3.fromRGB(180, 180, 180)
+		FOVLabel.TextSize = 12
+		FOVLabel.TextXAlignment = Enum.TextXAlignment.Left
+		
+		local FOVSlider = Instance.new("TextButton")
+		FOVSlider.Parent = AimbotContent
+		FOVSlider.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
+		FOVSlider.BorderColor3 = Color3.fromRGB(60, 60, 60)
+		FOVSlider.Position = UDim2.new(0, 10, 0, 155)
+		FOVSlider.Size = UDim2.new(0, 150, 0, 20)
+		FOVSlider.AutoButtonColor = false
+		FOVSlider.Text = ""
+		
+		local FOVFill = Instance.new("Frame")
+		FOVFill.Parent = FOVSlider
+		FOVFill.BackgroundColor3 = Color3.fromRGB(70, 70, 70)
+		FOVFill.BorderSizePixel = 0
+		FOVFill.Size = UDim2.new(0.26, 0, 1, 0)
+		
+		local FOVValueLabel = Instance.new("TextLabel")
+		FOVValueLabel.Parent = AimbotContent
+		FOVValueLabel.BackgroundTransparency = 1
+		FOVValueLabel.Position = UDim2.new(0, 165, 0, 155)
+		FOVValueLabel.Size = UDim2.new(0, 45, 0, 20)
+		FOVValueLabel.Font = Enum.Font.Code
+		FOVValueLabel.Text = "90"
+		FOVValueLabel.TextColor3 = Color3.fromRGB(180, 180, 180)
+		FOVValueLabel.TextSize = 12
+		
+		-- Silent Hitbox Slider
+		local SilentFOVLabel = Instance.new("TextLabel")
+		SilentFOVLabel.Parent = AimbotContent
+		SilentFOVLabel.BackgroundTransparency = 1
+		SilentFOVLabel.Position = UDim2.new(0, 10, 0, 180)
+		SilentFOVLabel.Size = UDim2.new(1, -20, 0, 20)
+		SilentFOVLabel.Font = Enum.Font.Code
+		SilentFOVLabel.Text = "silent hitbox"
+		SilentFOVLabel.TextColor3 = Color3.fromRGB(180, 180, 180)
+		SilentFOVLabel.TextSize = 12
+		SilentFOVLabel.TextXAlignment = Enum.TextXAlignment.Left
+		
+		local SilentFOVSlider = Instance.new("TextButton")
+		SilentFOVSlider.Parent = AimbotContent
+		SilentFOVSlider.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
+		SilentFOVSlider.BorderColor3 = Color3.fromRGB(60, 60, 60)
+		SilentFOVSlider.Position = UDim2.new(0, 10, 0, 205)
+		SilentFOVSlider.Size = UDim2.new(0, 150, 0, 20)
+		SilentFOVSlider.AutoButtonColor = false
+		SilentFOVSlider.Text = ""
+		
+		local SilentFOVFill = Instance.new("Frame")
+		SilentFOVFill.Parent = SilentFOVSlider
+		SilentFOVFill.BackgroundColor3 = Color3.fromRGB(70, 70, 70)
+		SilentFOVFill.BorderSizePixel = 0
+		SilentFOVFill.Size = UDim2.new(0.22, 0, 1, 0)
+		
+		local SilentFOVValueLabel = Instance.new("TextLabel")
+		SilentFOVValueLabel.Parent = AimbotContent
+		SilentFOVValueLabel.BackgroundTransparency = 1
+		SilentFOVValueLabel.Position = UDim2.new(0, 165, 0, 205)
+		SilentFOVValueLabel.Size = UDim2.new(0, 45, 0, 20)
+		SilentFOVValueLabel.Font = Enum.Font.Code
+		SilentFOVValueLabel.Text = "3"
+		SilentFOVValueLabel.TextColor3 = Color3.fromRGB(180, 180, 180)
+		SilentFOVValueLabel.TextSize = 12
+		
+		-- Smoothing Slider
+		local SmoothingLabel = Instance.new("TextLabel")
+		SmoothingLabel.Parent = AimbotContent
+		SmoothingLabel.BackgroundTransparency = 1
+		SmoothingLabel.Position = UDim2.new(0, 10, 0, 230)
+		SmoothingLabel.Size = UDim2.new(1, -20, 0, 20)
+		SmoothingLabel.Font = Enum.Font.Code
+		SmoothingLabel.Text = "smoothing"
+		SmoothingLabel.TextColor3 = Color3.fromRGB(180, 180, 180)
+		SmoothingLabel.TextSize = 12
+		SmoothingLabel.TextXAlignment = Enum.TextXAlignment.Left
+		
+		local SmoothingSlider = Instance.new("TextButton")
+		SmoothingSlider.Parent = AimbotContent
+		SmoothingSlider.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
+		SmoothingSlider.BorderColor3 = Color3.fromRGB(60, 60, 60)
+		SmoothingSlider.Position = UDim2.new(0, 10, 0, 255)
+		SmoothingSlider.Size = UDim2.new(0, 150, 0, 20)
+		SmoothingSlider.AutoButtonColor = false
+		SmoothingSlider.Text = ""
+		
+		local SmoothingFill = Instance.new("Frame")
+		SmoothingFill.Parent = SmoothingSlider
+		SmoothingFill.BackgroundColor3 = Color3.fromRGB(70, 70, 70)
+		SmoothingFill.BorderSizePixel = 0
+		SmoothingFill.Size = UDim2.new(0, 0, 1, 0)
+		
+		local SmoothingValueLabel = Instance.new("TextLabel")
+		SmoothingValueLabel.Parent = AimbotContent
+		SmoothingValueLabel.BackgroundTransparency = 1
+		SmoothingValueLabel.Position = UDim2.new(0, 165, 0, 255)
+		SmoothingValueLabel.Size = UDim2.new(0, 45, 0, 20)
+		SmoothingValueLabel.Font = Enum.Font.Code
+		SmoothingValueLabel.Text = "0"
+		SmoothingValueLabel.TextColor3 = Color3.fromRGB(180, 180, 180)
+		SmoothingValueLabel.TextSize = 12
+		
+		-- Slider handlers
+		local dragging = false
+		local function updateFOV(input)
+			local pos = math.clamp((input.Position.X - FOVSlider.AbsolutePosition.X) / FOVSlider.AbsoluteSize.X, 0, 1)
+			local fovValue = math.floor(15 + (pos * 285))
+			Environment.FOVSettings.Amount = fovValue
+			FOVFill.Size = UDim2.new(pos, 0, 1, 0)
+			FOVValueLabel.Text = tostring(fovValue)
 		end
-	end)
-	
-	FOVSlider.InputEnded:Connect(function(input)
-		if input.UserInputType == Enum.UserInputType.MouseButton1 then
-			dragging = false
+		
+		FOVSlider.InputBegan:Connect(function(input)
+			if input.UserInputType == Enum.UserInputType.MouseButton1 then
+				dragging = true
+				updateFOV(input)
+			end
+		end)
+		
+		FOVSlider.InputEnded:Connect(function(input)
+			if input.UserInputType == Enum.UserInputType.MouseButton1 then
+				dragging = false
+			end
+		end)
+		
+		UserInputService.InputChanged:Connect(function(input)
+			if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+				updateFOV(input)
+			end
+		end)
+		
+		local silentDragging = false
+		local function updateSilentFOV(input)
+			local pos = math.clamp((input.Position.X - SilentFOVSlider.AbsolutePosition.X) / SilentFOVSlider.AbsoluteSize.X, 0, 1)
+			local silentValue = math.floor(1 + (pos * 9))
+			Environment.Settings.SilentAimFOV = silentValue
+			SilentFOVFill.Size = UDim2.new(pos, 0, 1, 0)
+			SilentFOVValueLabel.Text = tostring(silentValue)
 		end
-	end)
-	
-	UserInputService.InputChanged:Connect(function(input)
-		if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
-			updateFOV(input)
+		
+		SilentFOVSlider.InputBegan:Connect(function(input)
+			if input.UserInputType == Enum.UserInputType.MouseButton1 then
+				silentDragging = true
+				updateSilentFOV(input)
+			end
+		end)
+		
+		SilentFOVSlider.InputEnded:Connect(function(input)
+			if input.UserInputType == Enum.UserInputType.MouseButton1 then
+				silentDragging = false
+			end
+		end)
+		
+		UserInputService.InputChanged:Connect(function(input)
+			if silentDragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+				updateSilentFOV(input)
+			end
+		end)
+		
+		local smoothingDragging = false
+		local function updateSmoothing(input)
+			local pos = math.clamp((input.Position.X - SmoothingSlider.AbsolutePosition.X) / SmoothingSlider.AbsoluteSize.X, 0, 1)
+			local smoothValue = math.floor(pos * 35)
+			Environment.Settings.Smoothing = smoothValue
+			SmoothingFill.Size = UDim2.new(pos, 0, 1, 0)
+			SmoothingValueLabel.Text = tostring(smoothValue)
 		end
-	end)
-	
-	local silentDragging = false
-	local function updateSilentFOV(input)
-		local pos = math.clamp((input.Position.X - SilentFOVSlider.AbsolutePosition.X) / SilentFOVSlider.AbsoluteSize.X, 0, 1)
-		local silentValue = math.floor(1 + (pos * 9))
-		Environment.Settings.SilentAimFOV = silentValue
-		SilentFOVFill.Size = UDim2.new(pos, 0, 1, 0)
-		SilentFOVValueLabel.Text = tostring(silentValue)
-	end
-	
-	SilentFOVSlider.InputBegan:Connect(function(input)
-		if input.UserInputType == Enum.UserInputType.MouseButton1 then
-			silentDragging = true
-			updateSilentFOV(input)
-		end
-	end)
-	
-	SilentFOVSlider.InputEnded:Connect(function(input)
-		if input.UserInputType == Enum.UserInputType.MouseButton1 then
-			silentDragging = false
-		end
-	end)
-	
-	UserInputService.InputChanged:Connect(function(input)
-		if silentDragging and input.UserInputType == Enum.UserInputType.MouseMovement then
-			updateSilentFOV(input)
-		end
-	end)
-	
-	-- Set initial slider positions
-	local initialPos = (Environment.FOVSettings.Amount - 15) / 285
-	FOVFill.Size = UDim2.new(initialPos, 0, 1, 0)
-	FOVValueLabel.Text = tostring(Environment.FOVSettings.Amount)
-	
-	local initialSilentPos = (Environment.Settings.SilentAimFOV - 1) / 9
-	SilentFOVFill.Size = UDim2.new(initialSilentPos, 0, 1, 0)
-	SilentFOVValueLabel.Text = tostring(Environment.Settings.SilentAimFOV)
-	
-	-- Toggle Enabled
-	EnabledBtn.MouseButton1Click:Connect(function()
-		Environment.Settings.Enabled = not Environment.Settings.Enabled
+		
+		SmoothingSlider.InputBegan:Connect(function(input)
+			if input.UserInputType == Enum.UserInputType.MouseButton1 then
+				smoothingDragging = true
+				updateSmoothing(input)
+			end
+		end)
+		
+		SmoothingSlider.InputEnded:Connect(function(input)
+			if input.UserInputType == Enum.UserInputType.MouseButton1 then
+				smoothingDragging = false
+			end
+		end)
+		
+		UserInputService.InputChanged:Connect(function(input)
+			if smoothingDragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+				updateSmoothing(input)
+			end
+		end)
+		
+		-- Button handlers
+		EnabledBtn.MouseButton1Click:Connect(function()
+			Environment.Settings.Enabled = not Environment.Settings.Enabled
+			if Environment.Settings.Enabled then
+				EnabledBtn.Text = "enabled"
+				EnabledBtn.TextColor3 = Color3.fromRGB(120, 255, 120)
+			else
+				EnabledBtn.Text = "disabled"
+				EnabledBtn.TextColor3 = Color3.fromRGB(255, 120, 120)
+				Running = false
+				Environment.Locked = nil
+				Environment.SilentTarget = nil
+				if Animation then Animation:Cancel() end
+			end
+			SaveSettings()
+		end)
+		
+		AimbotTypeBtn.MouseButton1Click:Connect(function()
+			AimbotTypeDropdown.Visible = not AimbotTypeDropdown.Visible
+		end)
+		
+		MemoryOption.MouseButton1Click:Connect(function()
+			Environment.Settings.AimbotType = "Memory"
+			AimbotTypeBtn.Text = "Memory"
+			AimbotTypeDropdown.Visible = false
+			SaveSettings()
+		end)
+		
+		SilentOption.MouseButton1Click:Connect(function()
+			Environment.Settings.AimbotType = "Silent"
+			AimbotTypeBtn.Text = "Silent"
+			AimbotTypeDropdown.Visible = false
+			SaveSettings()
+		end)
+		
+		-- Change Bind Button
+		local ChangeBindBtn = Instance.new("TextButton")
+		ChangeBindBtn.Parent = AimbotContent
+		ChangeBindBtn.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
+		ChangeBindBtn.BorderColor3 = Color3.fromRGB(60, 60, 60)
+		ChangeBindBtn.Position = UDim2.new(0, 10, 0, 88)
+		ChangeBindBtn.Size = UDim2.new(0, 90, 0, 22)
+		ChangeBindBtn.Font = Enum.Font.Code
+		ChangeBindBtn.Text = "change bind"
+		ChangeBindBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+		ChangeBindBtn.TextSize = 13
+		
+		local BindLabel = Instance.new("TextLabel")
+		BindLabel.Parent = AimbotContent
+		BindLabel.BackgroundTransparency = 1
+		BindLabel.Position = UDim2.new(0, 110, 0, 88)
+		BindLabel.Size = UDim2.new(1, -120, 0, 22)
+		BindLabel.Font = Enum.Font.Code
+		BindLabel.Text = "MouseButton2"
+		BindLabel.TextColor3 = Color3.fromRGB(180, 180, 180)
+		BindLabel.TextSize = 12
+		BindLabel.TextXAlignment = Enum.TextXAlignment.Left
+		
+		local MenuBindBtn = Instance.new("TextButton")
+		MenuBindBtn.Parent = AimbotContent
+		MenuBindBtn.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
+		MenuBindBtn.BorderColor3 = Color3.fromRGB(60, 60, 60)
+		MenuBindBtn.Position = UDim2.new(0, 10, 0, 113)
+		MenuBindBtn.Size = UDim2.new(0, 90, 0, 22)
+		MenuBindBtn.Font = Enum.Font.Code
+		MenuBindBtn.Text = "menu bind"
+		MenuBindBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+		MenuBindBtn.TextSize = 13
+		
+		local MenuBindLabel = Instance.new("TextLabel")
+		MenuBindLabel.Parent = AimbotContent
+		MenuBindLabel.BackgroundTransparency = 1
+		MenuBindLabel.Position = UDim2.new(0, 110, 0, 113)
+		MenuBindLabel.Size = UDim2.new(1, -120, 0, 22)
+		MenuBindLabel.Font = Enum.Font.Code
+		MenuBindLabel.Text = "RightAlt"
+		MenuBindLabel.TextColor3 = Color3.fromRGB(180, 180, 180)
+		MenuBindLabel.TextSize = 12
+		MenuBindLabel.TextXAlignment = Enum.TextXAlignment.Left
+		
+		-- Change bind handlers
+		ChangeBindBtn.MouseButton1Click:Connect(function()
+			if not WaitingForInput then
+				WaitingForInput = true
+				ChangeBindBtn.Text = "..."
+				
+				local connection
+				connection = UserInputService.InputBegan:Connect(function(input, processed)
+					if not processed and input.UserInputType ~= Enum.UserInputType.MouseMovement and WaitingForInput then
+						WaitingForInput = false
+						
+						if input.KeyCode and input.KeyCode ~= Enum.KeyCode.Unknown then
+							Environment.Settings.TriggerKey = input.KeyCode.Name
+							BindLabel.Text = input.KeyCode.Name
+						elseif input.UserInputType then
+							Environment.Settings.TriggerKey = input.UserInputType.Name
+							BindLabel.Text = input.UserInputType.Name
+						end
+						
+						ChangeBindBtn.Text = "change bind"
+						SaveSettings()
+						connection:Disconnect()
+					end
+				end)
+			end
+		end)
+		
+		MenuBindBtn.MouseButton1Click:Connect(function()
+			if not WaitingForInput then
+				WaitingForInput = true
+				MenuBindBtn.Text = "..."
+				
+				local connection
+				connection = UserInputService.InputBegan:Connect(function(input, processed)
+					if not processed and input.UserInputType ~= Enum.UserInputType.MouseMovement and input.KeyCode ~= Enum.KeyCode.Unknown and WaitingForInput then
+						WaitingForInput = false
+						MenuToggleBind = input.KeyCode
+						MenuBindLabel.Text = input.KeyCode.Name
+						MenuBindBtn.Text = "menu bind"
+						connection:Disconnect()
+					end
+				end)
+			end
+		end)
+		
+		-- Update initial labels
+		BindLabel.Text = Environment.Settings.TriggerKey
+		MenuBindLabel.Text = MenuToggleBind.Name
+		
 		if Environment.Settings.Enabled then
 			EnabledBtn.Text = "enabled"
 			EnabledBtn.TextColor3 = Color3.fromRGB(120, 255, 120)
-		else
-			EnabledBtn.Text = "disabled"
-			EnabledBtn.TextColor3 = Color3.fromRGB(255, 120, 120)
-			Running = false
-			Environment.Locked = nil
-			Environment.SilentTarget = nil
-			if Animation then Animation:Cancel() end
-			Environment.FOVCircle.Color = GetColor(Environment.FOVSettings.Color)
 		end
-		SaveSettings()
-	end)
+	end
 	
-	-- Aimbot Type Dropdown
-	AimbotTypeBtn.MouseButton1Click:Connect(function()
-		AimbotTypeDropdown.Visible = not AimbotTypeDropdown.Visible
-	end)
+	local function CreateRageTab()
+		-- Fling
+		local FlingLabel = Instance.new("TextLabel")
+		FlingLabel.Parent = RageContent
+		FlingLabel.BackgroundTransparency = 1
+		FlingLabel.Position = UDim2.new(0, 10, 0, 5)
+		FlingLabel.Size = UDim2.new(1, -20, 0, 20)
+		FlingLabel.Font = Enum.Font.Code
+		FlingLabel.Text = "fling"
+		FlingLabel.TextColor3 = Color3.fromRGB(180, 180, 180)
+		FlingLabel.TextSize = 12
+		FlingLabel.TextXAlignment = Enum.TextXAlignment.Left
+		
+		local FlingBindBtn = Instance.new("TextButton")
+		FlingBindBtn.Parent = RageContent
+		FlingBindBtn.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
+		FlingBindBtn.BorderColor3 = Color3.fromRGB(60, 60, 60)
+		FlingBindBtn.Position = UDim2.new(0, 10, 0, 30)
+		FlingBindBtn.Size = UDim2.new(0, 90, 0, 22)
+		FlingBindBtn.Font = Enum.Font.Code
+		FlingBindBtn.Text = "change bind"
+		FlingBindBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+		FlingBindBtn.TextSize = 13
+		
+		local FlingBindLabel = Instance.new("TextLabel")
+		FlingBindLabel.Parent = RageContent
+		FlingBindLabel.BackgroundTransparency = 1
+		FlingBindLabel.Position = UDim2.new(0, 10, 0, 55)
+		FlingBindLabel.Size = UDim2.new(1, -20, 0, 20)
+		FlingBindLabel.Font = Enum.Font.Code
+		FlingBindLabel.Text = "bind: Z"
+		FlingBindLabel.TextColor3 = Color3.fromRGB(180, 180, 180)
+		FlingBindLabel.TextSize = 12
+		FlingBindLabel.TextXAlignment = Enum.TextXAlignment.Left
+		
+		local FlingPowerLabel = Instance.new("TextLabel")
+		FlingPowerLabel.Parent = RageContent
+		FlingPowerLabel.BackgroundTransparency = 1
+		FlingPowerLabel.Position = UDim2.new(0, 10, 0, 80)
+		FlingPowerLabel.Size = UDim2.new(1, -20, 0, 20)
+		FlingPowerLabel.Font = Enum.Font.Code
+		FlingPowerLabel.Text = "fling power (studs)"
+		FlingPowerLabel.TextColor3 = Color3.fromRGB(180, 180, 180)
+		FlingPowerLabel.TextSize = 12
+		FlingPowerLabel.TextXAlignment = Enum.TextXAlignment.Left
+		
+		local FlingPowerInput = Instance.new("TextBox")
+		FlingPowerInput.Parent = RageContent
+		FlingPowerInput.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
+		FlingPowerInput.BorderColor3 = Color3.fromRGB(60, 60, 60)
+		FlingPowerInput.Position = UDim2.new(0, 10, 0, 105)
+		FlingPowerInput.Size = UDim2.new(0, 90, 0, 22)
+		FlingPowerInput.Font = Enum.Font.Code
+		FlingPowerInput.Text = "1000"
+		FlingPowerInput.TextColor3 = Color3.fromRGB(255, 255, 255)
+		FlingPowerInput.TextSize = 13
+		FlingPowerInput.PlaceholderText = "1000"
+		FlingPowerInput.ClearTextOnFocus = false
+		
+		-- Genie Bullet
+		local GenieBulletBtn = Instance.new("TextButton")
+		GenieBulletBtn.Parent = RageContent
+		GenieBulletBtn.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
+		GenieBulletBtn.BorderColor3 = Color3.fromRGB(60, 60, 60)
+		GenieBulletBtn.Position = UDim2.new(0, 10, 0, 137)
+		GenieBulletBtn.Size = UDim2.new(0, 90, 0, 22)
+		GenieBulletBtn.Font = Enum.Font.Code
+		GenieBulletBtn.Text = "genie bullet"
+		GenieBulletBtn.TextColor3 = Color3.fromRGB(255, 120, 120)
+		GenieBulletBtn.TextSize = 13
+		
+		-- Teleport
+		local TeleportLabel = Instance.new("TextLabel")
+		TeleportLabel.Parent = RageContent
+		TeleportLabel.BackgroundTransparency = 1
+		TeleportLabel.Position = UDim2.new(0, 10, 0, 169)
+		TeleportLabel.Size = UDim2.new(1, -20, 0, 20)
+		TeleportLabel.Font = Enum.Font.Code
+		TeleportLabel.Text = "teleport"
+		TeleportLabel.TextColor3 = Color3.fromRGB(180, 180, 180)
+		TeleportLabel.TextSize = 12
+		TeleportLabel.TextXAlignment = Enum.TextXAlignment.Left
+		
+		local TeleportBindBtn = Instance.new("TextButton")
+		TeleportBindBtn.Parent = RageContent
+		TeleportBindBtn.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
+		TeleportBindBtn.BorderColor3 = Color3.fromRGB(60, 60, 60)
+		TeleportBindBtn.Position = UDim2.new(0, 10, 0, 194)
+		TeleportBindBtn.Size = UDim2.new(0, 90, 0, 22)
+		TeleportBindBtn.Font = Enum.Font.Code
+		TeleportBindBtn.Text = "change bind"
+		TeleportBindBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+		TeleportBindBtn.TextSize = 13
+		
+		local TeleportBindLabel = Instance.new("TextLabel")
+		TeleportBindLabel.Parent = RageContent
+		TeleportBindLabel.BackgroundTransparency = 1
+		TeleportBindLabel.Position = UDim2.new(0, 10, 0, 219)
+		TeleportBindLabel.Size = UDim2.new(1, -20, 0, 20)
+		TeleportBindLabel.Font = Enum.Font.Code
+		TeleportBindLabel.Text = "bind: X"
+		TeleportBindLabel.TextColor3 = Color3.fromRGB(180, 180, 180)
+		TeleportBindLabel.TextSize = 12
+		TeleportBindLabel.TextXAlignment = Enum.TextXAlignment.Left
+		
+		local TeleportDistanceLabel = Instance.new("TextLabel")
+		TeleportDistanceLabel.Parent = RageContent
+		TeleportDistanceLabel.BackgroundTransparency = 1
+		TeleportDistanceLabel.Position = UDim2.new(0, 10, 0, 244)
+		TeleportDistanceLabel.Size = UDim2.new(1, -20, 0, 20)
+		TeleportDistanceLabel.Font = Enum.Font.Code
+		TeleportDistanceLabel.Text = "teleport distance"
+		TeleportDistanceLabel.TextColor3 = Color3.fromRGB(180, 180, 180)
+		TeleportDistanceLabel.TextSize = 12
+		TeleportDistanceLabel.TextXAlignment = Enum.TextXAlignment.Left
+		
+		local TeleportDistanceInput = Instance.new("TextBox")
+		TeleportDistanceInput.Parent = RageContent
+		TeleportDistanceInput.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
+		TeleportDistanceInput.BorderColor3 = Color3.fromRGB(60, 60, 60)
+		TeleportDistanceInput.Position = UDim2.new(0, 10, 0, 269)
+		TeleportDistanceInput.Size = UDim2.new(0, 90, 0, 22)
+		TeleportDistanceInput.Font = Enum.Font.Code
+		TeleportDistanceInput.Text = "10"
+		TeleportDistanceInput.TextColor3 = Color3.fromRGB(255, 255, 255)
+		TeleportDistanceInput.TextSize = 13
+		TeleportDistanceInput.PlaceholderText = "10"
+		TeleportDistanceInput.ClearTextOnFocus = false
+		
+		-- Handlers
+		FlingBindBtn.MouseButton1Click:Connect(function()
+			if not WaitingForInput then
+				WaitingForInput = true
+				FlingBindBtn.Text = "..."
+				
+				local connection
+				connection = UserInputService.InputBegan:Connect(function(input, processed)
+					if not processed and input.UserInputType ~= Enum.UserInputType.MouseMovement and input.KeyCode ~= Enum.KeyCode.Unknown and WaitingForInput then
+						WaitingForInput = false
+						Environment.Settings.FlingBind = input.KeyCode.Name
+						FlingBindLabel.Text = "bind: " .. input.KeyCode.Name
+						FlingBindBtn.Text = "change bind"
+						SaveSettings()
+						connection:Disconnect()
+					end
+				end)
+			end
+		end)
+		
+		FlingPowerInput.FocusLost:Connect(function()
+			local power = tonumber(FlingPowerInput.Text)
+			if power and power > 0 and power <= 10000 then
+				Environment.Settings.FlingPower = power
+				SaveSettings()
+			else
+				FlingPowerInput.Text = tostring(Environment.Settings.FlingPower)
+			end
+		end)
+		
+		GenieBulletBtn.MouseButton1Click:Connect(function()
+			Environment.Settings.GenieBullet = not Environment.Settings.GenieBullet
+			if Environment.Settings.GenieBullet then
+				GenieBulletBtn.TextColor3 = Color3.fromRGB(120, 255, 120)
+				EnableGenieBullet()
+			else
+				GenieBulletBtn.TextColor3 = Color3.fromRGB(255, 120, 120)
+				DisableGenieBullet()
+			end
+			SaveSettings()
+		end)
+		
+		TeleportBindBtn.MouseButton1Click:Connect(function()
+			if not WaitingForInput then
+				WaitingForInput = true
+				TeleportBindBtn.Text = "..."
+				
+				local connection
+				connection = UserInputService.InputBegan:Connect(function(input, processed)
+					if not processed and input.UserInputType ~= Enum.UserInputType.MouseMovement and input.KeyCode ~= Enum.KeyCode.Unknown and WaitingForInput then
+						WaitingForInput = false
+						Environment.Settings.TeleportBind = input.KeyCode.Name
+						TeleportBindLabel.Text = "bind: " .. input.KeyCode.Name
+						TeleportBindBtn.Text = "change bind"
+						SaveSettings()
+						connection:Disconnect()
+					end
+				end)
+			end
+		end)
+		
+		TeleportDistanceInput.FocusLost:Connect(function()
+			local distance = tonumber(TeleportDistanceInput.Text)
+			if distance and distance > 0 and distance <= 1000 then
+				Environment.Settings.TeleportDistance = distance
+				SaveSettings()
+			else
+				TeleportDistanceInput.Text = tostring(Environment.Settings.TeleportDistance)
+			end
+		end)
+	end
 	
-	MemoryOption.MouseButton1Click:Connect(function()
-		Environment.Settings.AimbotType = "Memory"
-		AimbotTypeBtn.Text = "Memory"
-		AimbotTypeDropdown.Visible = false
-		Environment.SilentTarget = nil
-		SaveSettings()
-	end)
-	
-	SilentOption.MouseButton1Click:Connect(function()
-		Environment.Settings.AimbotType = "Silent"
-		AimbotTypeBtn.Text = "Silent"
-		AimbotTypeDropdown.Visible = false
-		Environment.Locked = nil
-		if Animation then Animation:Cancel() end
-		SaveSettings()
-	end)
-	
-	-- Chams Toggle
-	ChamsBtn.MouseButton1Click:Connect(function()
-		Environment.Settings.Chams = not Environment.Settings.Chams
+	local function CreateVisualsTab()
+		local ChamsBtn = Instance.new("TextButton")
+		ChamsBtn.Parent = VisualsContent
+		ChamsBtn.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
+		ChamsBtn.BorderColor3 = Color3.fromRGB(60, 60, 60)
+		ChamsBtn.Position = UDim2.new(0, 10, 0, 5)
+		ChamsBtn.Size = UDim2.new(0, 90, 0, 22)
+		ChamsBtn.Font = Enum.Font.Code
+		ChamsBtn.Text = "chams"
+		ChamsBtn.TextColor3 = Color3.fromRGB(255, 120, 120)
+		ChamsBtn.TextSize = 13
+		
+		local ESPBtn = Instance.new("TextButton")
+		ESPBtn.Parent = VisualsContent
+		ESPBtn.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
+		ESPBtn.BorderColor3 = Color3.fromRGB(60, 60, 60)
+		ESPBtn.Position = UDim2.new(0, 10, 0, 37)
+		ESPBtn.Size = UDim2.new(0, 90, 0, 22)
+		ESPBtn.Font = Enum.Font.Code
+		ESPBtn.Text = "esp"
+		ESPBtn.TextColor3 = Color3.fromRGB(255, 120, 120)
+		ESPBtn.TextSize = 13
+		
+		local ESPColorLabel = Instance.new("TextLabel")
+		ESPColorLabel.Parent = VisualsContent
+		ESPColorLabel.BackgroundTransparency = 1
+		ESPColorLabel.Position = UDim2.new(0, 10, 0, 62)
+		ESPColorLabel.Size = UDim2.new(1, -20, 0, 20)
+		ESPColorLabel.Font = Enum.Font.Code
+		ESPColorLabel.Text = "esp color (hex)"
+		ESPColorLabel.TextColor3 = Color3.fromRGB(180, 180, 180)
+		ESPColorLabel.TextSize = 12
+		ESPColorLabel.TextXAlignment = Enum.TextXAlignment.Left
+		
+		local ESPColorInput = Instance.new("TextBox")
+		ESPColorInput.Parent = VisualsContent
+		ESPColorInput.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
+		ESPColorInput.BorderColor3 = Color3.fromRGB(60, 60, 60)
+		ESPColorInput.Position = UDim2.new(0, 10, 0, 87)
+		ESPColorInput.Size = UDim2.new(0, 90, 0, 22)
+		ESPColorInput.Font = Enum.Font.Code
+		ESPColorInput.Text = "FF0000"
+		ESPColorInput.TextColor3 = Color3.fromRGB(255, 255, 255)
+		ESPColorInput.TextSize = 13
+		ESPColorInput.PlaceholderText = "FF0000"
+		ESPColorInput.ClearTextOnFocus = false
+		
+		ChamsBtn.MouseButton1Click:Connect(function()
+			Environment.Settings.Chams = not Environment.Settings.Chams
+			if Environment.Settings.Chams then
+				ChamsBtn.TextColor3 = Color3.fromRGB(120, 255, 120)
+				-- Initialize chams for all players
+				for _, player in pairs(Players:GetPlayers()) do
+					if player ~= LocalPlayer and player.Character then
+						if not (Environment.Settings.TeamCheck and player.Team == LocalPlayer.Team) then
+							CreateChams(player)
+						end
+					end
+				end
+			else
+				ChamsBtn.TextColor3 = Color3.fromRGB(255, 120, 120)
+				-- Remove all chams
+				for player, _ in pairs(Environment.ChamsHighlights) do
+					RemoveChams(player)
+				end
+			end
+			SaveSettings()
+		end)
+		
+		ESPBtn.MouseButton1Click:Connect(function()
+			Environment.Settings.ESPEnabled = not Environment.Settings.ESPEnabled
+			if Environment.Settings.ESPEnabled then
+				ESPBtn.TextColor3 = Color3.fromRGB(120, 255, 120)
+				InitializeESP()
+			else
+				ESPBtn.TextColor3 = Color3.fromRGB(255, 120, 120)
+			end
+			SaveSettings()
+		end)
+		
+		ESPColorInput.FocusLost:Connect(function()
+			local text = ESPColorInput.Text:gsub("#", ""):upper()
+			if #text == 6 and text:match("^[0-9A-F]+$") then
+				Environment.Settings.ESPColor = text
+				ESPColorInput.Text = text
+				SaveSettings()
+			else
+				ESPColorInput.Text = Environment.Settings.ESPColor
+			end
+		end)
+		
 		if Environment.Settings.Chams then
 			ChamsBtn.TextColor3 = Color3.fromRGB(120, 255, 120)
-		else
-			ChamsBtn.TextColor3 = Color3.fromRGB(255, 120, 120)
 		end
-		UpdateChams()
-		SaveSettings()
-	end)
-	
-	-- ESP Toggle
-	ESPBtn.MouseButton1Click:Connect(function()
-		Environment.Settings.ESPEnabled = not Environment.Settings.ESPEnabled
+		
 		if Environment.Settings.ESPEnabled then
 			ESPBtn.TextColor3 = Color3.fromRGB(120, 255, 120)
-			InitializeESP()
-		else
-			ESPBtn.TextColor3 = Color3.fromRGB(255, 120, 120)
 		end
-		SaveSettings()
-	end)
-	
-	-- ESP Color Input
-	ESPColorInput.FocusLost:Connect(function()
-		local text = ESPColorInput.Text:gsub("#", ""):upper()
-		if #text == 6 and text:match("^[0-9A-F]+$") then
-			Environment.Settings.ESPColor = text
-			ESPColorInput.Text = text
-			SaveSettings()
-		else
-			ESPColorInput.Text = Environment.Settings.ESPColor
-		end
-	end)
-	
-	-- Change Bind functions
-	ChangeBindBtn.MouseButton1Click:Connect(function()
-		if not WaitingForInput then
-			WaitingForInput = true
-			ChangeBindBtn.Text = "..."
-			
-			local connection
-			connection = UserInputService.InputBegan:Connect(function(input, processed)
-				if not processed and input.UserInputType ~= Enum.UserInputType.MouseMovement and WaitingForInput then
-					WaitingForInput = false
-					
-					if input.KeyCode and input.KeyCode ~= Enum.KeyCode.Unknown then
-						Environment.Settings.TriggerKey = input.KeyCode.Name
-						BindLabel.Text = "bind: " .. input.KeyCode.Name
-					elseif input.UserInputType then
-						Environment.Settings.TriggerKey = input.UserInputType.Name
-						BindLabel.Text = "bind: " .. input.UserInputType.Name
-					end
-					
-					ChangeBindBtn.Text = "change bind"
-					SaveSettings()
-					connection:Disconnect()
-				end
-			end)
-		end
-	end)
-	
-	ChangeMenuBindBtn.MouseButton1Click:Connect(function()
-		if not WaitingForInput then
-			WaitingForInput = true
-			ChangeMenuBindBtn.Text = "..."
-			
-			local connection
-			connection = UserInputService.InputBegan:Connect(function(input, processed)
-				if not processed and input.UserInputType ~= Enum.UserInputType.MouseMovement and input.KeyCode ~= Enum.KeyCode.Unknown and WaitingForInput then
-					WaitingForInput = false
-					MenuToggleBind = input.KeyCode
-					MenuBindLabel.Text = "menu: " .. input.KeyCode.Name
-					ChangeMenuBindBtn.Text = "menu bind"
-					connection:Disconnect()
-				end
-			end)
-		end
-	end)
-	
-	-- Update UI
-	BindLabel.Text = "bind: " .. Environment.Settings.TriggerKey
-	AimbotTypeBtn.Text = Environment.Settings.AimbotType
-	ESPColorInput.Text = Environment.Settings.ESPColor
-	
-	if Environment.Settings.Enabled then
-		EnabledBtn.TextColor3 = Color3.fromRGB(120, 255, 120)
-	else
-		EnabledBtn.Text = "disabled"
-		EnabledBtn.TextColor3 = Color3.fromRGB(255, 120, 120)
 	end
 	
-	if Environment.Settings.Chams then
-		ChamsBtn.TextColor3 = Color3.fromRGB(120, 255, 120)
-	else
-		ChamsBtn.TextColor3 = Color3.fromRGB(255, 120, 120)
+	local function CreateSettingsTab()
+		local ExpandAllBtn = Instance.new("TextButton")
+		ExpandAllBtn.Parent = SettingsContent
+		ExpandAllBtn.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
+		ExpandAllBtn.BorderColor3 = Color3.fromRGB(60, 60, 60)
+		ExpandAllBtn.Position = UDim2.new(0, 10, 0, 5)
+		ExpandAllBtn.Size = UDim2.new(0, 90, 0, 22)
+		ExpandAllBtn.Font = Enum.Font.Code
+		ExpandAllBtn.Text = "expand all"
+		ExpandAllBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+		ExpandAllBtn.TextSize = 13
+		
+		local CollapseAllBtn = Instance.new("TextButton")
+		CollapseAllBtn.Parent = SettingsContent
+		CollapseAllBtn.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
+		CollapseAllBtn.BorderColor3 = Color3.fromRGB(60, 60, 60)
+		CollapseAllBtn.Position = UDim2.new(0, 10, 0, 37)
+		CollapseAllBtn.Size = UDim2.new(0, 90, 0, 22)
+		CollapseAllBtn.Font = Enum.Font.Code
+		CollapseAllBtn.Text = "collapse all"
+		CollapseAllBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+		CollapseAllBtn.TextSize = 13
+		
+		ExpandAllBtn.MouseButton1Click:Connect(function()
+			ExpandAll()
+		end)
+		
+		CollapseAllBtn.MouseButton1Click:Connect(function()
+			CollapseAll()
+		end)
 	end
 	
-	if Environment.Settings.ESPEnabled then
-		ESPBtn.TextColor3 = Color3.fromRGB(120, 255, 120)
-	else
-		ESPBtn.TextColor3 = Color3.fromRGB(255, 120, 120)
+	-- Tab switching
+	local function SwitchTab(tab)
+		CurrentTab = tab
+		AimbotContent.Visible = (tab == "Aimbot")
+		RageContent.Visible = (tab == "Rage")
+		VisualsContent.Visible = (tab == "Visuals")
+		SettingsContent.Visible = (tab == "Settings")
+		
+		AimbotTabBtn.BackgroundColor3 = (tab == "Aimbot") and Color3.fromRGB(35, 35, 35) or Color3.fromRGB(25, 25, 25)
+		AimbotTabBtn.TextColor3 = (tab == "Aimbot") and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(180, 180, 180)
+		
+		RageTabBtn.BackgroundColor3 = (tab == "Rage") and Color3.fromRGB(35, 35, 35) or Color3.fromRGB(25, 25, 25)
+		RageTabBtn.TextColor3 = (tab == "Rage") and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(180, 180, 180)
+		
+		VisualsTabBtn.BackgroundColor3 = (tab == "Visuals") and Color3.fromRGB(35, 35, 35) or Color3.fromRGB(25, 25, 25)
+		VisualsTabBtn.TextColor3 = (tab == "Visuals") and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(180, 180, 180)
+		
+		SettingsTabBtn.BackgroundColor3 = (tab == "Settings") and Color3.fromRGB(35, 35, 35) or Color3.fromRGB(25, 25, 25)
+		SettingsTabBtn.TextColor3 = (tab == "Settings") and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(180, 180, 180)
 	end
+	
+	AimbotTabBtn.MouseButton1Click:Connect(function() SwitchTab("Aimbot") end)
+	RageTabBtn.MouseButton1Click:Connect(function() SwitchTab("Rage") end)
+	VisualsTabBtn.MouseButton1Click:Connect(function() SwitchTab("Visuals") end)
+	SettingsTabBtn.MouseButton1Click:Connect(function() SwitchTab("Settings") end)
+	
+	CreateAimbotTab()
+	CreateRageTab()
+	CreateVisualsTab()
+	CreateSettingsTab()
 	
 	return ScreenGui, MainFrame
 end
@@ -972,7 +1550,7 @@ local function ExpandHitbox(player)
 			)
 			part.Massless = true
 			part.CanCollide = false
-			part.Transparency = 1 -- Always invisible for silent aim
+			part.Transparency = 1
 		end
 	end
 end
@@ -1011,7 +1589,7 @@ ServiceConnections.TypingEndedConnection = UserInputService.TextBoxFocusReleased
 	Typing = false
 end)
 
---// Create, Save & Load Settings
+--// Load Settings
 
 if Environment.Settings.SaveSettings then
 	if not isfolder(Title) then
@@ -1043,17 +1621,25 @@ else
 end
 
 local function Load()
-	-- Initialize ESP for existing players
 	InitializeESP()
 	
-	-- Handle new players joining
 	ServiceConnections.PlayerAddedConnection = Players.PlayerAdded:Connect(function(player)
 		if player ~= LocalPlayer then
 			CreateESP(player)
+			player.CharacterAdded:Connect(function(character)
+				task.wait(0.5)
+				RemoveChams(player)
+				RemoveESP(player)
+				if Environment.Settings.Chams then
+					CreateChams(player)
+				end
+				if Environment.Settings.ESPEnabled then
+					CreateESP(player)
+				end
+			end)
 		end
 	end)
 	
-	-- Handle players leaving
 	ServiceConnections.PlayerRemovingConnection = Players.PlayerRemoving:Connect(function(player)
 		RemoveESP(player)
 		RemoveChams(player)
@@ -1063,11 +1649,9 @@ local function Load()
 		end
 	end)
 	
-	-- Handle character respawns for all current players
 	for _, player in pairs(Players:GetPlayers()) do
 		if player ~= LocalPlayer then
 			player.CharacterAdded:Connect(function(character)
-				-- Wait a moment for character to fully load
 				task.wait(0.5)
 				RemoveChams(player)
 				RemoveESP(player)
@@ -1081,38 +1665,16 @@ local function Load()
 		end
 	end
 	
-	-- Handle character respawns for new players
-	ServiceConnections.PlayerAddedConnection = Players.PlayerAdded:Connect(function(player)
-		if player ~= LocalPlayer then
-			CreateESP(player)
-			player.CharacterAdded:Connect(function(character)
-				task.wait(0.5)
-				RemoveChams(player)
-				RemoveESP(player)
-				if Environment.Settings.Chams then
-					CreateChams(player)
-				end
-				if Environment.Settings.ESPEnabled then
-					CreateESP(player)
-				end
-			end)
-		end
-	end)
-	
-	-- Periodic refresh for Chams and ESP (every 2 seconds)
 	ServiceConnections.PeriodicRefreshConnection = RunService.Heartbeat:Connect(function()
-		-- Use a counter to only refresh every ~2 seconds
 		if not Environment.RefreshCounter then
 			Environment.RefreshCounter = 0
 		end
 		
 		Environment.RefreshCounter = Environment.RefreshCounter + 1
 		
-		-- Refresh every 120 frames (approximately 2 seconds at 60 FPS)
 		if Environment.RefreshCounter >= 120 then
 			Environment.RefreshCounter = 0
 			
-			-- Refresh Chams
 			if Environment.Settings.Chams then
 				for _, player in pairs(Players:GetPlayers()) do
 					if player ~= LocalPlayer and player.Character then
@@ -1124,7 +1686,6 @@ local function Load()
 				end
 			end
 			
-			-- Refresh ESP
 			if Environment.Settings.ESPEnabled then
 				for _, player in pairs(Players:GetPlayers()) do
 					if player ~= LocalPlayer and player.Character then
@@ -1177,7 +1738,23 @@ local function Load()
 						local Vector = Camera:WorldToViewportPoint(Environment.Locked.Character[Environment.Settings.LockPart].Position)
 						mousemoverel((Vector.X - UserInputService:GetMouseLocation().X) * Environment.Settings.ThirdPersonSensitivity, (Vector.Y - UserInputService:GetMouseLocation().Y) * Environment.Settings.ThirdPersonSensitivity)
 					else
-						if Environment.Settings.Sensitivity > 0 then
+						local smoothingValue = Environment.Settings.Smoothing
+						
+						if smoothingValue > 0 then
+							-- ULTRA STRONG CURVE: 1-14 = insanely strong aimbot, 15+ = starts to fade
+							local smoothSpeed
+							if smoothingValue <= 14 then
+								-- Insanely strong aimbot: 0.01 to 0.08 seconds (barely noticeable difference)
+								smoothSpeed = 0.01 + (smoothingValue / 14) * 0.07
+							else
+								-- Starts fading at 15+: 0.08 to 1.2 seconds
+								smoothSpeed = 0.08 + ((smoothingValue - 14) / 21) * 1.12
+							end
+							
+							local targetCFrame = CFrame.new(Camera.CFrame.Position, Environment.Locked.Character[Environment.Settings.LockPart].Position)
+							Animation = TweenService:Create(Camera, TweenInfo.new(smoothSpeed, Enum.EasingStyle.Sine, Enum.EasingDirection.Out), {CFrame = targetCFrame})
+							Animation:Play()
+						elseif Environment.Settings.Sensitivity > 0 then
 							Animation = TweenService:Create(Camera, TweenInfo.new(Environment.Settings.Sensitivity, Enum.EasingStyle.Sine, Enum.EasingDirection.Out), {CFrame = CFrame.new(Camera.CFrame.Position, Environment.Locked.Character[Environment.Settings.LockPart].Position)})
 							Animation:Play()
 						else
@@ -1212,6 +1789,21 @@ local function Load()
 
 	ServiceConnections.InputBeganConnection = UserInputService.InputBegan:Connect(function(Input)
 		if not Typing and not WaitingForInput then
+			-- Fling keybind
+			pcall(function()
+				if Input.KeyCode == Enum.KeyCode[Environment.Settings.FlingBind] then
+					FlingPlayer()
+				end
+			end)
+			
+			-- Teleport keybind
+			pcall(function()
+				if Input.KeyCode == Enum.KeyCode[Environment.Settings.TeleportBind] then
+					TeleportForward()
+				end
+			end)
+			
+			-- Aimbot keybind
 			pcall(function()
 				if Input.KeyCode == Enum.KeyCode[Environment.Settings.TriggerKey] then
 					if Environment.Settings.Toggle then
@@ -1292,7 +1884,6 @@ end
 Environment.Functions = {}
 
 function Environment.Functions:Exit()
-	-- Restore all hitboxes
 	local processedPlayers = {}
 	for partId, data in pairs(Environment.OriginalSizes) do
 		if data.Part and data.Part.Parent then
@@ -1307,15 +1898,15 @@ function Environment.Functions:Exit()
 		end
 	end
 	
-	-- Remove all chams
 	for player, _ in pairs(Environment.ChamsHighlights) do
 		RemoveChams(player)
 	end
 	
-	-- Remove all ESP
 	for player, _ in pairs(Environment.ESPBoxes) do
 		RemoveESP(player)
 	end
+	
+	DisableGenieBullet()
 	
 	SaveSettings()
 	for _, v in next, ServiceConnections do
@@ -1347,6 +1938,7 @@ function Environment.Functions:ResetSettings()
 		AliveCheck = true,
 		WallCheck = false,
 		Sensitivity = 0,
+		Smoothing = 0,
 		ThirdPerson = false,
 		ThirdPersonSensitivity = 3,
 		TriggerKey = "MouseButton2",
@@ -1356,7 +1948,12 @@ function Environment.Functions:ResetSettings()
 		SilentAimFOV = 3,
 		Chams = false,
 		ESPEnabled = false,
-		ESPColor = "FF0000"
+		ESPColor = "FF0000",
+		FlingBind = "Z",
+		FlingPower = 1000,
+		GenieBullet = false,
+		TeleportBind = "X",
+		TeleportDistance = 10
 	}
 
 	Environment.FOVSettings = {
